@@ -74,7 +74,7 @@ function describeUrl(url) {
 	}
 }
 
-/** 4xx responses will not改 change on retry, apart from these two. */
+/** 4xx responses will not change on retry, apart from these two. */
 function isRetryableStatus(status) {
 	return status === 408 || status === 429 || status >= 500
 }
