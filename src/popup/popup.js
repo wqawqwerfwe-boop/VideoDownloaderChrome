@@ -2,7 +2,8 @@
  * Popup UI.
  *
  * Renders the per-tab media registry: one card per detected item, one row per
- * rendition in its quality ladder, with a download button on each row.
+ * rendition in its quality ladder, with a download button - or a live progress
+ * bar - on each row.
  *
  * Everything shown here (page titles, URLs, codec strings) originates from
  * arbitrary websites, so the DOM is built node by node and all text goes
@@ -12,7 +13,7 @@
  */
 
 import { MSG, FailureCode } from "../shared/messages.js"
-import { MediaKind, humanBytes, humanBitrate, humanDuration, qualityLabel } from "../shared/media-types.js"
+import { MediaKind, Strategy, humanBytes, humanBitrate, humanDuration, qualityLabel } from "../shared/media-types.js"
 
 const listEl = document.getElementById("list")
 const countEl = document.getElementById("count")
@@ -23,6 +24,24 @@ const toastEl = document.getElementById("toast")
 /** @type {number|null} */
 let tabId = null
 let toastTimer = null
+
+/**
+ * Progress state lives here rather than in the DOM.
+ *
+ * MEDIA_UPDATED re-renders the whole list, so a progress bar that existed only
+ * as DOM would be wiped the moment another manifest was detected mid-download.
+ * Keyed by entry + rendition so a re-render can restore it.
+ *
+ * @type {Map<string, Object>}
+ */
+const activeJobs = new Map()
+/** @type {Map<string, string>} jobId -> activeJobs key */
+const jobKeys = new Map()
+
+/** @param {string} entryId @param {number} variantIndex */
+function jobKey(entryId, variantIndex) {
+	return `${entryId}:${variantIndex}`
+}
 
 /* ------------------------------------------------------------------ *
  * Tiny DOM helpers
@@ -85,6 +104,80 @@ function toast(text, kind = "info") {
 }
 
 /* ------------------------------------------------------------------ *
+ * Progress presentation
+ * ------------------------------------------------------------------ */
+
+/** @param {number} bytesPerSecond */
+function humanSpeed(bytesPerSecond) {
+	if (!bytesPerSecond || bytesPerSecond < 1) return ""
+	return `${humanBytes(bytesPerSecond)}/s`
+}
+
+/** @param {number|null} seconds */
+function humanEta(seconds) {
+	if (!seconds || seconds <= 0 || !Number.isFinite(seconds)) return ""
+	if (seconds < 60) return `${Math.round(seconds)}s left`
+	const minutes = Math.floor(seconds / 60)
+	if (minutes < 60) return `${minutes}m left`
+	return `${Math.floor(minutes / 60)}h ${minutes % 60}m left`
+}
+
+/** @param {Object} job */
+function describeProgress(job) {
+	if (job.phase === "preparing") return "Reading manifest\u2026"
+	if (job.phase === "muxing") return "Merging audio and video\u2026"
+	if (job.phase === "saving") return "Saving\u2026"
+
+	const parts = [`${job.percent ?? 0}%`]
+	if (job.bytesReceived) parts.push(humanBytes(job.bytesReceived))
+
+	const speed = humanSpeed(job.speed)
+	if (speed) parts.push(speed)
+	else {
+		const eta = humanEta(job.etaSeconds)
+		if (eta) parts.push(eta)
+	}
+
+	return parts.join(" \u00b7 ")
+}
+
+/** @param {Object} job */
+function renderProgress(job) {
+	const fill = el("div", { class: "progress-fill" })
+	fill.style.width = `${Math.max(0, Math.min(100, job.percent ?? 0))}%`
+
+	return el("div", { class: "progress", attrs: { "data-progress": job.jobId } }, [
+		el("div", { class: "progress-body" }, [
+			el("div", { class: "progress-track" }, [fill]),
+			el("div", { class: "progress-meta", text: describeProgress(job) }),
+		]),
+		job.strategy === Strategy.COMPANION ? chip("ffmpeg", "muted") : null,
+		el("button", {
+			class: "ghost",
+			text: "Cancel",
+			attrs: { type: "button", "data-cancel": job.jobId },
+		}),
+	])
+}
+
+/**
+ * Repaint one job in place. A full re-render would fight with the user
+ * scrolling the list four times a second.
+ * @param {Object} job
+ */
+function paintProgress(job) {
+	const node = listEl.querySelector(`[data-progress="${CSS.escape(job.jobId)}"]`)
+	if (!node) {
+		void refresh()
+		return
+	}
+	const fill = node.querySelector(".progress-fill")
+	if (fill) fill.style.width = `${Math.max(0, Math.min(100, job.percent ?? 0))}%`
+	const meta = node.querySelector(".progress-meta")
+	if (meta) meta.textContent = describeProgress(job)
+}
+
+/* ------------------------------------------------------------------ *
  * Rendering
  * ------------------------------------------------------------------ */
 
@@ -122,21 +215,27 @@ function renderVariantRow(entry, variant) {
 	const exact = entry.kind === MediaKind.PROGRESSIVE
 	const sizeText = estimated ? `${exact ? "" : "~"}${humanBytes(estimated)}` : ""
 
-	return el("div", { class: "row" }, [
+	const job = activeJobs.get(jobKey(entry.id, index))
+
+	const side = job
+		? [renderProgress(job)]
+		: [
+				sizeText ? el("span", { class: "size", text: sizeText }) : null,
+				variant.needsMux ? chip("+audio", "muted") : null,
+				el("button", {
+					class: "primary",
+					text: "Download",
+					attrs: { type: "button", "data-entry": entry.id, "data-variant": String(index) },
+				}),
+			]
+
+	return el("div", { class: job ? "row row-active" : "row" }, [
 		el("div", { class: "row-main" }, [
 			el("span", { class: "quality", text: label }),
 			meta.length ? el("span", { class: "meta", text: meta.join(" \u00b7 ") }) : null,
 			variant.codecs ? el("span", { class: "codecs", text: variant.codecs, title: variant.codecs }) : null,
 		]),
-		el("div", { class: "row-side" }, [
-			sizeText ? el("span", { class: "size", text: sizeText }) : null,
-			variant.needsMux ? chip("+audio", "muted") : null,
-			el("button", {
-				class: "primary",
-				text: "Download",
-				attrs: { type: "button", "data-entry": entry.id, "data-variant": String(index) },
-			}),
-		]),
+		el("div", { class: "row-side" }, side),
 	])
 }
 
@@ -215,7 +314,12 @@ function renderEntry(entry) {
 			for (const variant of entry.variants) body.append(renderVariantRow(entry, variant))
 			if (entry.audioTracks?.length) {
 				const n = entry.audioTracks.length
-				body.append(el("div", { class: "hint", text: `${n} separate audio track${n > 1 ? "s" : ""} detected` }))
+				body.append(
+					el("div", {
+						class: "hint",
+						text: `${n} separate audio track${n > 1 ? "s" : ""} detected \u00b7 merged into the download`,
+					})
+				)
 			}
 	}
 
@@ -264,6 +368,27 @@ async function refresh() {
 	render(res.items || [], res.witness)
 }
 
+/**
+ * Rebuild progress state from the worker.
+ *
+ * Without this, reopening the popup during a download would show an idle
+ * Download button for a rendition that is already 60% fetched.
+ */
+async function restoreJobs() {
+	const res = await send({ type: MSG.JOB_LIST })
+	if (!res.ok) return
+
+	activeJobs.clear()
+	jobKeys.clear()
+	for (const job of res.jobs ?? []) {
+		if (job.tabId !== tabId) continue
+		if (["done", "failed", "cancelled"].includes(job.state)) continue
+		const key = jobKey(job.entryId, job.variantIndex)
+		activeJobs.set(key, job)
+		jobKeys.set(job.jobId, key)
+	}
+}
+
 /* ------------------------------------------------------------------ *
  * Events
  * ------------------------------------------------------------------ */
@@ -283,21 +408,42 @@ listEl.addEventListener("click", async (event) => {
 		return
 	}
 
+	const cancelId = button.dataset.cancel
+	if (cancelId) {
+		button.disabled = true
+		button.textContent = "Stopping\u2026"
+		await send({ type: MSG.JOB_CANCEL, jobId: cancelId })
+		return
+	}
+
 	const entryId = button.dataset.entry
 	if (!entryId) return
 
+	const variantIndex = Number(button.dataset.variant) || 0
 	const original = button.textContent
 	button.disabled = true
 	button.textContent = "Starting\u2026"
 
-	const res = await send({
-		type: MSG.JOB_START,
-		tabId,
-		entryId,
-		variantIndex: Number(button.dataset.variant) || 0,
-	})
+	const res = await send({ type: MSG.JOB_START, tabId, entryId, variantIndex })
 
 	if (res.ok) {
+		// Segmented jobs report progress; a progressive file is already saving.
+		if (res.segmented && res.jobId) {
+			const key = jobKey(entryId, variantIndex)
+			activeJobs.set(key, {
+				jobId: res.jobId,
+				entryId,
+				variantIndex,
+				state: "preparing",
+				phase: "preparing",
+				percent: 0,
+				strategy: res.strategy,
+			})
+			jobKeys.set(res.jobId, key)
+			await refresh()
+			return
+		}
+
 		button.textContent = "Saved"
 		toast(res.filename ? `Downloading ${res.filename}` : "Download started", "ok")
 		return
@@ -307,7 +453,7 @@ listEl.addEventListener("click", async (event) => {
 	button.textContent = original
 
 	if (res.code === FailureCode.DRM_PROTECTED) toast(res.message, "warn")
-	else if (res.code === FailureCode.ENGINE_UNAVAILABLE) toast(res.message, "info")
+	else if (res.code === FailureCode.COMPANION_MISSING) toast(res.message, "warn")
 	else toast(res.message || "Download failed", "error")
 })
 
@@ -317,8 +463,69 @@ clearBtn.addEventListener("click", async () => {
 })
 
 chrome.runtime.onMessage.addListener((message) => {
-	if (message?.type === MSG.MEDIA_UPDATED && message.tabId === tabId) void refresh()
+	if (message?.type === MSG.MEDIA_UPDATED && message.tabId === tabId) {
+		void refresh()
+		return
+	}
+
+	const job = message?.job
+	if (!job || job.tabId !== tabId) return
+
+	switch (message.type) {
+		case MSG.JOB_PROGRESS: {
+			const key = jobKey(job.entryId, job.variantIndex)
+			const known = activeJobs.has(key)
+			activeJobs.set(key, job)
+			jobKeys.set(job.jobId, key)
+			// A job started from another popup window has no row yet.
+			if (known) paintProgress(job)
+			else void refresh()
+			break
+		}
+
+		case MSG.JOB_DONE: {
+			clearJob(job)
+			const where = job.path ? ` \u2192 ${job.path}` : ""
+			toast(`Saved ${job.filename}${where}`, "ok")
+			if (job.warnings?.length) toast(job.warnings[0], "info")
+			void refresh()
+			break
+		}
+
+		case MSG.JOB_ERROR: {
+			clearJob(job)
+			if (job.code === FailureCode.CANCELLED) toast("Download cancelled", "info")
+			else toast(job.message || "Download failed", job.code === FailureCode.DRM_PROTECTED ? "warn" : "error")
+			void refresh()
+			break
+		}
+	}
 })
+
+/** @param {Object} job */
+function clearJob(job) {
+	const key = jobKeys.get(job.jobId) ?? jobKey(job.entryId, job.variantIndex)
+	activeJobs.delete(key)
+	jobKeys.delete(job.jobId)
+}
+
+/* ------------------------------------------------------------------ *
+ * Boot
+ * ------------------------------------------------------------------ */
+
+/**
+ * Report companion availability in the footer, so "why did this fall back to
+ * ffmpeg" and "is the host installed" are answerable without devtools.
+ */
+async function showCompanionStatus() {
+	const res = await send({ type: MSG.COMPANION_PROBE })
+	if (!res.ok) return
+
+	statusEl.textContent =
+		res.companion?.state === "ready"
+			? `HLS, DASH and progressive ready \u00b7 ${res.summary}`
+			: `HLS, DASH and progressive ready \u00b7 ${res.summary} (in-browser only)`
+}
 
 async function init() {
 	const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
@@ -327,8 +534,14 @@ async function init() {
 		return
 	}
 	tabId = tab.id
-	statusEl.textContent = "Progressive files save now \u00b7 segmented streams land next commit"
+	statusEl.textContent = "HLS, DASH and progressive downloads ready"
+
+	await restoreJobs()
 	await refresh()
+
+	// Probing spawns a process when the host exists, so it runs after the list
+	// is on screen rather than blocking first paint.
+	void showCompanionStatus()
 }
 
 void init()

@@ -4,18 +4,20 @@
  * Deliberately thin. An MV3 worker is evicted after ~30s idle, so it must never
  * own long-running work; it routes messages, keeps the registry and badge in
  * sync, and hands anything durable to code that outlives it. The segmented
- * download orchestrator therefore lives in an offscreen document, wired up in
- * the next commit.
+ * download orchestrator lives in an offscreen document, driven by
+ * download-engine.js.
  *
  * @module background/service-worker
  */
 
-import { MSG, FailureCode, broadcast } from "../shared/messages.js"
+import { MSG, Target, FailureCode, broadcast } from "../shared/messages.js"
 import { MediaKind, safeFilename } from "../shared/media-types.js"
 import * as registry from "./media-registry.js"
 import * as sniffer from "./sniffer.js"
 import * as badge from "./badge.js"
 import * as netRules from "./net-rules.js"
+import * as engine from "./download-engine.js"
+import { probeCompanion, describeCompanion, invalidateCompanionProbe } from "./companion.js"
 import { probeEntry } from "./probe.js"
 import { createLogger, setLogLevel } from "../shared/logger.js"
 
@@ -65,6 +67,7 @@ function autoProbe(tabId) {
 chrome.tabs.onRemoved.addListener(async (tabId) => {
 	sniffer.forgetTab(tabId)
 	await registry.clear(tabId)
+	await engine.forgetTab(tabId)
 })
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
@@ -124,6 +127,11 @@ async function startProgressive(entry, pageTitle) {
  * ------------------------------------------------------------------ */
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+	// Every extension context receives every runtime message. Anything
+	// addressed to the offscreen engine must be left for the engine to answer,
+	// or this listener would win the race and reply on its behalf.
+	if (message?.target === Target.OFFSCREEN) return false
+
 	// Returning true keeps the channel open for the async reply.
 	handleMessage(message, sender)
 		.then(sendResponse)
@@ -222,21 +230,25 @@ async function handleMessage(message, sender) {
 				return await startProgressive(entry, tab?.title || entry.pageTitle || "")
 			}
 
-			// Segmented streams need the offscreen orchestrator, which is not yet
-			// installed. Report it plainly rather than failing silently.
-			log.info(`segmented job requested (entry=${entryId} variant=${variantIndex}) - engine pending`)
-			return {
-				ok: false,
-				code: FailureCode.ENGINE_UNAVAILABLE,
-				message: "Segmented stream engine arrives in the next commit.",
-			}
+			return await engine.startJob({ tabId, entryId, variantIndex })
 		}
 
 		case MSG.JOB_LIST:
-			return { ok: true, jobs: [] }
+			return { ok: true, jobs: await engine.listJobs() }
 
 		case MSG.JOB_CANCEL:
-			return { ok: true }
+			return await engine.cancelJob(message.jobId)
+
+		// Relayed from the offscreen engine.
+		case MSG.ENGINE_PROGRESS:
+		case MSG.ENGINE_RESULT:
+			return await engine.handleEngineMessage(message)
+
+		case MSG.COMPANION_PROBE: {
+			if (message.force) invalidateCompanionProbe()
+			const probe = await probeCompanion({ force: Boolean(message.force) })
+			return { ok: true, companion: probe, summary: describeCompanion(probe) }
+		}
 
 		default:
 			return { ok: false, code: FailureCode.UNKNOWN, message: `Unknown message: ${String(type)}` }
