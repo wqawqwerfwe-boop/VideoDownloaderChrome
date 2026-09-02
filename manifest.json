@@ -1,0 +1,59 @@
+{
+	"manifest_version": 3,
+	"name": "OpenVideo Downloader",
+	"version": "0.1.0",
+	"description": "Detect and download progressive, HLS and MPEG-DASH media. No paywalls, no watermarks, no throttling.",
+	"minimum_chrome_version": "116",
+
+	"permissions": [
+		"webRequest",
+		"storage",
+		"unlimitedStorage",
+		"downloads",
+		"tabs",
+		"offscreen",
+		"scripting",
+		"declarativeNetRequestWithHostAccess"
+	],
+
+	"host_permissions": ["<all_urls>"],
+
+	"background": {
+		"service_worker": "src/background/service-worker.js",
+		"type": "module"
+	},
+
+	"action": {
+		"default_popup": "src/popup/popup.html",
+		"default_title": "OpenVideo Downloader"
+	},
+
+	"content_scripts": [
+		{
+			"matches": ["<all_urls>"],
+			"js": ["src/content/mse-hook.js"],
+			"run_at": "document_start",
+			"world": "MAIN",
+			"all_frames": true,
+			"match_about_blank": true
+		},
+		{
+			"matches": ["<all_urls>"],
+			"js": ["src/content/dom-observer.js"],
+			"run_at": "document_start",
+			"world": "ISOLATED",
+			"all_frames": true,
+			"match_about_blank": true
+		}
+	],
+
+	"declarative_net_request": {
+		"rule_resources": [
+			{
+				"id": "ovd_static_rules",
+				"enabled": true,
+				"path": "rules/dnr-header-rules.json"
+			}
+		]
+	}
+}

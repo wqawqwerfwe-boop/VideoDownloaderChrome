@@ -1,0 +1,19 @@
+{
+	"name": "openvideo-downloader",
+	"version": "0.1.0",
+	"description": "Open-source Manifest V3 media sniffer and downloader for progressive, HLS and MPEG-DASH streams.",
+	"private": true,
+	"type": "module",
+	"license": "MIT",
+	"scripts": {
+		"css": "tailwindcss -i ./src/popup/tailwind.src.css -o ./src/popup/popup.css --minify",
+		"css:watch": "tailwindcss -i ./src/popup/tailwind.src.css -o ./src/popup/popup.css --watch"
+	},
+	"devDependencies": {
+		"tailwindcss": "^3.4.17"
+	},
+	"dependencies": {
+		"mux.js": "^7.0.3",
+		"mp4box": "^0.5.2"
+	}
+}
