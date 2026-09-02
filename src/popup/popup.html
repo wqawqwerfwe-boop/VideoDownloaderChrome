@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>OpenVideo Downloader</title>
+		<link rel="stylesheet" href="popup.css" />
+	</head>
+	<body>
+		<header class="topbar">
+			<div class="brand">
+				<span class="dot" aria-hidden="true"></span>
+				<h1>Detected media</h1>
+				<span id="count" class="count" aria-live="polite"></span>
+			</div>
+			<button id="clear" class="ghost" type="button" title="Forget everything detected on this tab">Clear</button>
+		</header>
+
+		<main id="list" class="list"></main>
+
+		<footer class="footer">
+			<span id="status" class="status"></span>
+		</footer>
+
+		<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+		<script type="module" src="popup.js"></script>
+	</body>
+</html>

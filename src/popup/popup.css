@@ -1,0 +1,418 @@
+/*
+ * Popup styles. Hand-authored: Manifest V3's default CSP forbids remote script,
+ * so a Tailwind CDN build is not an option, and a local Tailwind step would make
+ * the repo unloadable as an unpacked extension until someone runs npm install.
+ * Plain CSS keeps the extension buildless.
+ */
+
+:root {
+	--bg: #ffffff;
+	--bg-sunken: #f4f5f7;
+	--card: #ffffff;
+	--border: #e4e6ea;
+	--text: #16191d;
+	--text-dim: #6b7280;
+	--accent: #10b981;
+	--accent-text: #04301f;
+	--warn: #b45309;
+	--warn-bg: #fef3c7;
+	--error: #b42318;
+	--radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #17191c;
+		--bg-sunken: #101214;
+		--card: #1f2225;
+		--border: #2e3236;
+		--text: #e8eaed;
+		--text-dim: #9aa1a9;
+		--accent: #34d399;
+		--accent-text: #04231a;
+		--warn: #fbbf24;
+		--warn-bg: #3a2d10;
+		--error: #f87171;
+	}
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+}
+
+body {
+	width: 420px;
+	max-height: 580px;
+	display: flex;
+	flex-direction: column;
+	background: var(--bg-sunken);
+	color: var(--text);
+	font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	-webkit-font-smoothing: antialiased;
+}
+
+/* ---------------- top bar ---------------- */
+
+.topbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 10px 12px;
+	background: var(--bg);
+	border-bottom: 1px solid var(--border);
+	position: sticky;
+	top: 0;
+	z-index: 2;
+}
+
+.brand {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.brand h1 {
+	margin: 0;
+	font-size: 13px;
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--accent);
+	flex: none;
+}
+
+.count {
+	font-variant-numeric: tabular-nums;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--accent-text);
+	background: var(--accent);
+	border-radius: 999px;
+	padding: 1px 7px;
+}
+
+.count:empty {
+	display: none;
+}
+
+/* ---------------- list ---------------- */
+
+.list {
+	flex: 1;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.card {
+	background: var(--card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	overflow: hidden;
+}
+
+.card-blocked {
+	opacity: 0.85;
+}
+
+.card-head {
+	padding: 9px 11px;
+	border-bottom: 1px solid var(--border);
+}
+
+.title {
+	font-weight: 600;
+	font-size: 12.5px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sub {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 4px;
+	font-size: 11px;
+	color: var(--text-dim);
+}
+
+.host {
+	max-width: 190px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.chip {
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.03em;
+	padding: 1px 6px;
+	border-radius: 5px;
+	border: 1px solid var(--border);
+	color: var(--text-dim);
+	flex: none;
+}
+
+.chip-stream {
+	color: var(--accent-text);
+	background: var(--accent);
+	border-color: transparent;
+}
+
+.chip-file {
+	color: var(--text);
+}
+
+.chip-live {
+	color: #fff;
+	background: #dc2626;
+	border-color: transparent;
+}
+
+.chip-muted {
+	font-weight: 600;
+}
+
+/* ---------------- rows ---------------- */
+
+.card-body {
+	display: flex;
+	flex-direction: column;
+}
+
+.row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 7px 11px;
+}
+
+.row + .row {
+	border-top: 1px solid var(--border);
+}
+
+.row:hover {
+	background: var(--bg-sunken);
+}
+
+.row-main {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
+}
+
+.quality {
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+}
+
+.meta,
+.codecs {
+	font-size: 11px;
+	color: var(--text-dim);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 230px;
+}
+
+.codecs {
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 10px;
+}
+
+.row-side {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	flex: none;
+}
+
+.size {
+	font-size: 11px;
+	color: var(--text-dim);
+	font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- buttons ---------------- */
+
+button {
+	font: inherit;
+	cursor: pointer;
+	border-radius: 7px;
+	border: 1px solid transparent;
+	transition: background 0.12s ease, opacity 0.12s ease;
+}
+
+button:disabled {
+	cursor: default;
+	opacity: 0.55;
+}
+
+button:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+.primary {
+	background: var(--accent);
+	color: var(--accent-text);
+	font-size: 12px;
+	font-weight: 600;
+	padding: 4px 11px;
+}
+
+.primary:hover:not(:disabled) {
+	filter: brightness(1.07);
+}
+
+.ghost {
+	background: transparent;
+	color: var(--text-dim);
+	border-color: var(--border);
+	font-size: 11.5px;
+	padding: 3px 9px;
+}
+
+.ghost:hover {
+	color: var(--text);
+	background: var(--bg-sunken);
+}
+
+/* ---------------- notices ---------------- */
+
+.notice {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 9px 11px;
+	font-size: 12px;
+	color: var(--text-dim);
+}
+
+.notice-warn {
+	color: var(--warn);
+	background: var(--warn-bg);
+	justify-content: space-between;
+}
+
+.notice-block {
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 3px;
+}
+
+.notice-block strong {
+	color: var(--text);
+	font-size: 12px;
+}
+
+.hint {
+	padding: 6px 11px;
+	font-size: 11px;
+	color: var(--text-dim);
+	border-top: 1px solid var(--border);
+}
+
+.spinner {
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	border: 2px solid var(--border);
+	border-top-color: var(--accent);
+	animation: spin 0.7s linear infinite;
+	flex: none;
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.spinner {
+		animation-duration: 2.4s;
+	}
+}
+
+/* ---------------- empty + footer ---------------- */
+
+.empty {
+	text-align: center;
+	padding: 34px 22px;
+	color: var(--text-dim);
+}
+
+.empty p {
+	margin: 0 0 5px;
+	font-size: 12px;
+}
+
+.empty-title {
+	font-weight: 600;
+	font-size: 13px !important;
+	color: var(--text);
+}
+
+.footer {
+	padding: 7px 12px;
+	border-top: 1px solid var(--border);
+	background: var(--bg);
+}
+
+.status {
+	font-size: 10.5px;
+	color: var(--text-dim);
+}
+
+/* ---------------- toast ---------------- */
+
+.toast {
+	position: fixed;
+	left: 10px;
+	right: 10px;
+	bottom: 34px;
+	padding: 8px 11px;
+	border-radius: 8px;
+	font-size: 12px;
+	background: var(--card);
+	border: 1px solid var(--border);
+	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+	z-index: 5;
+}
+
+.toast-ok {
+	border-color: var(--accent);
+}
+
+.toast-warn {
+	border-color: var(--warn);
+	color: var(--warn);
+}
+
+.toast-error {
+	border-color: var(--error);
+	color: var(--error);
+}
