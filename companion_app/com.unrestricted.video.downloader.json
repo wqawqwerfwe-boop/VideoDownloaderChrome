@@ -1,0 +1,9 @@
+{
+  "name": "com.unrestricted.video.downloader",
+  "description": "OpenVideo Downloader companion host (ffmpeg bridge). TEMPLATE - run install.sh or install.bat to generate the real manifest with absolute paths and your extension ID.",
+  "path": "/ABSOLUTE/PATH/TO/companion_app/host.py",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://EXTENSION_ID_GOES_HERE/"
+  ]
+}
