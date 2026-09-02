@@ -1,12 +1,12 @@
 {
 	"name": "openvideo-downloader",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Open-source Manifest V3 media sniffer and downloader for progressive, HLS and MPEG-DASH streams.",
 	"private": true,
 	"type": "module",
 	"license": "MIT",
-	"dependencies": {
-		"mux.js": "^7.0.3",
-		"mp4box": "^0.5.2"
+	"//": "Intentionally dependency-free. The extension is loaded unpacked exactly as it sits in git: no bundler, no transpiler, no node_modules. Everything the download engine needs is vendored in src/vendor/. This file exists only to declare metadata and ES module semantics for editors and linters.",
+	"scripts": {
+		"icons": "echo 'Open tools/make-icons.html in Chrome - it writes the four PNGs into your Downloads folder.'"
 	}
 }

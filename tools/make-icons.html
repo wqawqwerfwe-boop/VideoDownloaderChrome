@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>OpenVideo Downloader - icon generator</title>
+		<style>
+			:root {
+				color-scheme: dark;
+			}
+			body {
+				margin: 0;
+				padding: 40px 24px;
+				font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+				background: #0b0f14;
+				color: #e6edf3;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 24px;
+			}
+			h1 {
+				margin: 0;
+				font-size: 18px;
+				font-weight: 650;
+			}
+			p {
+				margin: 0;
+				max-width: 46em;
+				color: #9aa7b4;
+				text-align: center;
+			}
+			code {
+				font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+				font-size: 0.9em;
+				color: #c8d3de;
+			}
+			#previews {
+				display: flex;
+				align-items: flex-end;
+				gap: 20px;
+				padding: 20px 28px;
+				border: 1px solid #1e2733;
+				border-radius: 12px;
+				background: #10161d;
+			}
+			figure {
+				margin: 0;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 8px;
+			}
+			figcaption {
+				font-size: 11px;
+				color: #6e7d8c;
+				font-variant-numeric: tabular-nums;
+			}
+			canvas {
+				image-rendering: pixelated;
+				border-radius: 6px;
+			}
+			button {
+				font: inherit;
+				font-weight: 600;
+				color: #06121f;
+				background: #34d399;
+				border: 0;
+				border-radius: 8px;
+				padding: 10px 20px;
+				cursor: pointer;
+			}
+			button:hover {
+				background: #4ade9f;
+			}
+			#done {
+				color: #34d399;
+				min-height: 1.55em;
+				font-weight: 600;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>Icon generator</h1>
+		<p>
+			Click <strong>Generate</strong> to save <code>icon16.png</code>, <code>icon32.png</code>,
+			<code>icon48.png</code> and <code>icon128.png</code> to your Downloads folder, then move them into
+			<code>assets/icons/</code>. See <code>assets/icons/README.md</code> for the two manifest blocks to add
+			afterwards.
+		</p>
+
+		<div id="previews"></div>
+
+		<button id="go" type="button">Generate</button>
+		<div id="done"></div>
+
+		<script>
+			const SIZES = [16, 32, 48, 128]
+
+			/**
+			 * Rounded-rect path. Chrome has roundRect() since 99, but this page may be
+			 * opened in anything, so do it by hand.
+			 */
+			function roundRect(ctx, x, y, w, h, r) {
+				ctx.beginPath()
+				ctx.moveTo(x + r, y)
+				ctx.arcTo(x + w, y, x + w, y + h, r)
+				ctx.arcTo(x + w, y + h, x, y + h, r)
+				ctx.arcTo(x, y + h, x, y, r)
+				ctx.arcTo(x, y, x + w, y, r)
+				ctx.closePath()
+			}
+
+			/** Down-arrow-into-tray mark on a dark rounded tile. */
+			function draw(size) {
+				const canvas = document.createElement("canvas")
+				canvas.width = size
+				canvas.height = size
+				const ctx = canvas.getContext("2d")
+				const s = size / 128
+
+				const bg = ctx.createLinearGradient(0, 0, size, size)
+				bg.addColorStop(0, "#12212e")
+				bg.addColorStop(1, "#0b1319")
+				ctx.fillStyle = bg
+				roundRect(ctx, 0, 0, size, size, 26 * s)
+				ctx.fill()
+
+				ctx.fillStyle = "#34d399"
+				ctx.strokeStyle = "#34d399"
+				ctx.lineCap = "round"
+				ctx.lineJoin = "round"
+
+				// Shaft
+				ctx.lineWidth = 13 * s
+				ctx.beginPath()
+				ctx.moveTo(64 * s, 28 * s)
+				ctx.lineTo(64 * s, 68 * s)
+				ctx.stroke()
+
+				// Arrow head
+				ctx.beginPath()
+				ctx.moveTo(64 * s, 92 * s)
+				ctx.lineTo(38 * s, 60 * s)
+				ctx.lineTo(90 * s, 60 * s)
+				ctx.closePath()
+				ctx.fill()
+
+				// Tray
+				ctx.lineWidth = 12 * s
+				ctx.beginPath()
+				ctx.moveTo(30 * s, 104 * s)
+				ctx.lineTo(98 * s, 104 * s)
+				ctx.stroke()
+
+				return canvas
+			}
+
+			const previews = document.getElementById("previews")
+			const canvases = new Map()
+
+			for (const size of SIZES) {
+				const canvas = draw(size)
+				canvases.set(size, canvas)
+				const figure = document.createElement("figure")
+				const caption = document.createElement("figcaption")
+				caption.textContent = size + " px"
+				figure.append(canvas, caption)
+				previews.append(figure)
+			}
+
+			function save(canvas, name) {
+				return new Promise((resolve) => {
+					canvas.toBlob((blob) => {
+						const url = URL.createObjectURL(blob)
+						const a = document.createElement("a")
+						a.href = url
+						a.download = name
+						document.body.append(a)
+						a.click()
+						a.remove()
+						// Revoke on the next macrotask; revoking synchronously can cancel
+						// the download in some Chrome builds.
+						setTimeout(() => {
+							URL.revokeObjectURL(url)
+							resolve()
+						}, 250)
+					}, "image/png")
+				})
+			}
+
+			document.getElementById("go").addEventListener("click", async () => {
+				const done = document.getElementById("done")
+				done.textContent = ""
+				for (const size of SIZES) {
+					await save(canvases.get(size), `icon${size}.png`)
+				}
+				done.textContent = "Saved 4 PNGs to your Downloads folder."
+			})
+		</script>
+	</body>
+</html>

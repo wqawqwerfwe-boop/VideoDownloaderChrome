@@ -152,10 +152,20 @@ async function handleMessage(message, sender) {
 					kind: candidate.kind,
 					container: candidate.container,
 					mimeType: candidate.mimeType,
+					// The MSE hook and the DOM observer both harvest codec strings -
+					// from `MediaSource.isTypeSupported` / `addSourceBuffer` arguments
+					// and from `<source type="video/mp4; codecs=...">` respectively.
+					// This handler used to enumerate fields by hand and omit `codecs`,
+					// so all of that metadata was silently discarded and the popup
+					// could only show codecs for entries the prober had reached.
+					codecs: candidate.codecs,
 					title: candidate.title,
 					duration: candidate.duration,
 					width: candidate.width,
 					height: candidate.height,
+					// Dropped for the same reason as `codecs`.
+					size: candidate.size,
+					bandwidth: candidate.bandwidth,
 					poster: candidate.poster,
 					source: candidate.source || "dom",
 					pageUrl: sender?.tab?.url,
