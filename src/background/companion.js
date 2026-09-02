@@ -96,6 +96,8 @@ async function runProbe() {
 		const reply = await chrome.runtime.sendNativeMessage(HOST_NAME, {
 			action: "ping",
 			protocol: PROTOCOL_VERSION,
+			// A ping is inherently one-shot: one request, one reply.
+			stream: false,
 		})
 
 		if (!reply || reply.ok !== true) {
@@ -400,7 +402,11 @@ function runOverPort({ payload, onProgress, signal }) {
 			}
 		})
 
-		port.postMessage(payload)
+		// `stream: true` tells the host it may emit progress and warnings before
+		// the terminal message. The two transports are indistinguishable from the
+		// host's side - both are length-prefixed JSON on a pipe - so without this
+		// flag it would have to guess, and guessing wrong kills the download.
+		port.postMessage({ ...payload, stream: true })
 	})
 }
 
@@ -419,7 +425,11 @@ async function runOneShot({ payload, signal, portError }) {
 
 	let reply
 	try {
-		reply = await chrome.runtime.sendNativeMessage(HOST_NAME, payload)
+		// `stream: false` is load-bearing: Chrome resolves this call on the first
+		// message the host sends and then terminates the process. A host that
+		// streamed progress here would have its ffmpeg killed at 0%, and the
+		// progress message would arrive where a terminal result was expected.
+		reply = await chrome.runtime.sendNativeMessage(HOST_NAME, { ...payload, stream: false })
 	} catch (error) {
 		const detail = error?.message || portError?.message || "not installed"
 		throw new EngineError(FailureCode.COMPANION_MISSING, `Companion host unavailable (${detail})`, {
