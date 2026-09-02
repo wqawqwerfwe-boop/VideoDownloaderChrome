@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>OpenVideo Downloader engine</title>
+	</head>
+	<body>
+		<!--
+			This document is never shown. It exists because the service worker cannot
+			do the work: MV3 evicts it after ~30s idle, it has no DOM and therefore no
+			URL.createObjectURL, and it cannot hold a large buffer. This page has all
+			three and lives exactly as long as the engine keeps it open.
+		-->
+		<script type="module" src="downloader.js"></script>
+	</body>
+</html>
