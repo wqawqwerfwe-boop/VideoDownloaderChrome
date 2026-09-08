@@ -402,9 +402,7 @@ def header_lines(headers):
 def _split_headers(headers):
     """
     Split the payload headers into the two ffmpeg wants as dedicated options
-    and the remainder.
-
-    Returns (user_agent, referer, others).
+    and the remainder. Returns (user_agent, referer, others).
     """
     user_agent = ""
     referer = ""
@@ -424,8 +422,8 @@ def _is_segmented_engine_host(url):
     """
     Whether this URL belongs to a platform that needs the segmented engine.
 
-    Matched on the parsed hostname rather than with a substring test: a
-    naive `"kinescope.io" in url` would also fire on
+    Matched on the parsed hostname rather than with a substring test: a naive
+    `"kinescope.io" in url` would also fire on
     `https://elsewhere.example/?ref=kinescope.io`.
     """
     try:
@@ -458,9 +456,9 @@ def fetch_manifest(url, headers):
     and `error` then describes why.
 
     The two-value return exists because the DRM gate is only meaningful if it
-    actually sees the manifest. Returning a bare None conflated "unreadable"
-    with "empty", and detect_drm(None) reports no protection - so the caller
-    must be able to tell the difference. See handle_download.
+    actually sees the manifest. A bare None conflated "unreadable" with "clean",
+    and detect_drm(None) reports no protection - so the caller has to be able to
+    tell the difference. See handle_download.
     """
     request = urllib.request.Request(url)
     for line in header_lines(headers):
@@ -517,11 +515,11 @@ def detect_drm(manifest_text):
     return None
 
 
-# Flags that hand an external downloader the means to decrypt a protected
+# Flags that would hand an external downloader the means to decrypt a protected
 # stream. The DRM gate in handle_download already refuses Widevine, PlayReady,
 # FairPlay, Sample-AES and CENC before any engine is chosen, so none of these
-# should ever be constructed. This list makes that a checked invariant instead
-# of an assumption: N_m3u8DL-RE is perfectly capable of DRM decryption when
+# should ever be constructed. This list makes that a checked invariant rather
+# than an assumption: N_m3u8DL-RE is perfectly capable of DRM decryption when
 # given key material, and this host must never be the thing that supplies it.
 _KEY_MATERIAL_FLAGS = frozenset(
     {
@@ -717,8 +715,8 @@ def build_ffmpeg_command(
     Assemble the ffmpeg invocation.
 
     `optimized` turns on the segment-heavy tuning wanted for platforms like
-    Kinescope. It is a separate attempt rather than the default because a few
-    of those options are relatively recent, and an ffmpeg that does not know an
+    Kinescope. It is a separate attempt rather than the default because a few of
+    those options are relatively recent, and an ffmpeg that does not know an
     option aborts instead of ignoring it - see the attempt ladder in
     handle_download.
     """
@@ -733,8 +731,8 @@ def build_ffmpeg_command(
         if optimized:
             # A dedicated -referer is applied per-request by the http protocol,
             # whereas a Referer smuggled through -headers is dropped by some
-            # builds when a segment redirects - which is exactly when a
-            # hotlink check runs.
+            # builds when a segment redirects - which is exactly when a hotlink
+            # check runs.
             argv += ["-referer", referer]
         else:
             other = dict(other)
@@ -755,8 +753,8 @@ def build_ffmpeg_command(
 
     if optimized:
         argv += [
-            # Retry the transient refusals a busy segment CDN hands out, rather
-            # than tearing down the whole job on one bad chunk.
+            # Retry the transient refusals a busy segment CDN hands out instead
+            # of tearing down the whole job on one bad chunk.
             "-reconnect_on_network_error", "1",
             "-reconnect_on_http_error", "403,404,408,429,500,502,503,504",
             # Reuse the connection across segments; a fresh TLS handshake per
@@ -837,8 +835,8 @@ def build_external_command(
         "--download-retry-count", "5",
         "--http-request-timeout", "30",
         "--del-after-done",
-        # Our stdout is the native messaging wire; keep the child's output
-        # plain so it can be parsed, and keep it from writing its own log file.
+        # Our stdout is the native messaging wire; keep the child's output plain
+        # so it can be parsed, and keep it from writing its own log file.
         "--no-ansi-color",
         "--no-log",
     ]
@@ -966,10 +964,10 @@ def run_external_downloader(job, argv, output_path):
     """
     Run N_m3u8DL-RE and relay progress.
 
-    Its progress is drawn on stdout and redrawn with carriage returns, so
-    stderr is folded in and the whole stream is split on both terminators. The
-    child's stdout is piped rather than inherited for the same reason ffmpeg's
-    is discarded: our own stdout is the native messaging channel.
+    Its progress is drawn on stdout and redrawn with carriage returns, so stderr
+    is folded in and the whole stream is split on both terminators. The child's
+    stdout is piped rather than inherited for the same reason ffmpeg's is
+    discarded: our own stdout is the native messaging channel.
 
     Returns (returncode, tail).
     """
@@ -1070,9 +1068,9 @@ def locate_external_output(output_path):
     """
     Find what the external engine actually wrote.
 
-    It is given --save-name without an extension and picks the container
-    itself, so the result may not land exactly on `output_path`. Anything it
-    did produce is moved onto the path already promised to the extension.
+    It is given --save-name without an extension and picks the container itself,
+    so the result may not land exactly on `output_path`. Anything it did produce
+    is moved onto the path already promised to the extension.
     """
     if output_path.exists():
         return output_path
@@ -1201,11 +1199,10 @@ def handle_download(request, streaming):
         # ------------------------------------------------------------------ #
         # Engine selection
         #
-        # Reached only after the DRM gate above, so the external engine is
-        # never handed a protected stream. Kinescope's multi-period ladders
-        # stitch badly under a bare ffmpeg call; N_m3u8DL-RE downloads each
-        # period separately and muxes once, which is what keeps the chunks
-        # from corrupting.
+        # Reached only after the DRM gate above, so the external engine is never
+        # handed a protected stream. Kinescope's multi-period ladders stitch
+        # badly under a bare ffmpeg call; N_m3u8DL-RE downloads each period
+        # separately and muxes once, which is what keeps the chunks intact.
         # ------------------------------------------------------------------ #
         segmented_host = _is_segmented_engine_host(manifest_url)
         external_binary = find_external_downloader() if segmented_host else None
@@ -1253,9 +1250,7 @@ def handle_download(request, streaming):
                     output_path = produced
                     completed_externally = True
                 else:
-                    job.warn(
-                        "N_m3u8DL-RE reported success but wrote no file; retrying with ffmpeg"
-                    )
+                    job.warn("N_m3u8DL-RE reported success but wrote no file; retrying with ffmpeg")
             else:
                 job.warn(
                     "N_m3u8DL-RE exited {0}; retrying with the optimized ffmpeg pipeline".format(returncode)
@@ -1360,8 +1355,8 @@ def _reader_thread(inbox):
     """
     Drain stdin on a separate thread.
 
-    The main thread blocks reading the engine's output, so a cancel that
-    arrived inline would not be seen until the download had already finished.
+    The main thread blocks reading the engine's output, so a cancel that arrived
+    inline would not be seen until the download had already finished.
     """
     while True:
         try:
@@ -1394,4 +1389,286 @@ def serve():
         return
 
     inbox = []
-    thread = threading.Thread(target=_reader_thread, args=(inbox,),
+    thread = threading.Thread(target=_reader_thread, args=(inbox,), daemon=True)
+    thread.start()
+
+    message = first
+    while message is not None:
+        action = str(message.get("action") or "")
+
+        # `stream` tells the host which transport is in use. connectNative can
+        # carry many messages; sendNativeMessage accepts exactly one and kills
+        # the process afterwards. Default to streaming for older clients.
+        streaming = message.get("stream") is not False
+
+        if action == "ping":
+            info = ffmpeg_info()
+            send_message(
+                {
+                    "ok": True,
+                    "version": HOST_VERSION,
+                    "protocol": PROTOCOL_VERSION,
+                    "ffmpeg": info,
+                    "ffprobe": {"available": bool(find_binary("ffprobe"))},
+                    "externalDownloader": external_downloader_info(),
+                    "downloadsDir": str(downloads_dir()),
+                    "platform": sys.platform,
+                }
+            )
+
+        elif action == "download":
+            send_message(handle_download(message, streaming))
+
+        elif action == "cancel":
+            job = _ACTIVE_JOBS.get(str(message.get("jobId") or ""))
+            if job:
+                job.cancel()
+            send_message({"type": "error", "code": CODE_CANCELLED, "message": "Cancelled"})
+
+        else:
+            send_message(
+                {
+                    "type": "error",
+                    "code": CODE_FAILED,
+                    "message": "Unknown action: {0}".format(action or "(none)"),
+                }
+            )
+
+        # One-shot callers get exactly one reply and then close the pipe.
+        if not streaming:
+            break
+
+        while not inbox:
+            time.sleep(0.05)
+            if not thread.is_alive() and not inbox:
+                return
+        message = inbox.pop(0)
+
+    log("host exiting")
+
+
+# ====================================================================== #
+# Installer
+#
+# Lives here so install.sh and install.bat stay thin. Batch and shell both make
+# a mess of JSON quoting, and the manifest path must be absolute and exact.
+# ====================================================================== #
+
+def _browser_manifest_dirs():
+    home = Path.home()
+    if sys.platform == "darwin":
+        support = home / "Library" / "Application Support"
+        return [
+            support / "Google" / "Chrome" / "NativeMessagingHosts",
+            support / "Google" / "Chrome Beta" / "NativeMessagingHosts",
+            support / "Chromium" / "NativeMessagingHosts",
+            support / "Microsoft Edge" / "NativeMessagingHosts",
+            support / "BraveSoftware" / "Brave-Browser" / "NativeMessagingHosts",
+            support / "Vivaldi" / "NativeMessagingHosts",
+        ]
+    if os.name == "nt":
+        return []  # Windows uses the registry instead.
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or (home / ".config"))
+    return [
+        config / "google-chrome" / "NativeMessagingHosts",
+        config / "google-chrome-beta" / "NativeMessagingHosts",
+        config / "chromium" / "NativeMessagingHosts",
+        config / "microsoft-edge" / "NativeMessagingHosts",
+        config / "BraveSoftware" / "Brave-Browser" / "NativeMessagingHosts",
+        config / "vivaldi" / "NativeMessagingHosts",
+    ]
+
+
+def _windows_launcher(script_path):
+    """
+    Windows native messaging will not execute a .py file directly, so point the
+    manifest at a .bat shim that invokes the interpreter.
+    """
+    launcher = script_path.parent / "host.bat"
+    launcher.write_text(
+        "@echo off\r\n" '"{0}" "{1}" %*\r\n'.format(sys.executable, script_path),
+        encoding="utf-8",
+    )
+    return launcher
+
+
+def install(extension_ids):
+    script_path = Path(__file__).resolve()
+
+    if not extension_ids:
+        print("Usage: python3 host.py --install <EXTENSION_ID> [MORE_IDS...]")
+        print()
+        print("Find the ID on chrome://extensions with Developer mode enabled.")
+        print("An unpacked extension gets a fresh random ID unless manifest.json")
+        print('pins one with a "key" field, so re-run this after reloading it.')
+        return 2
+
+    clean_ids = []
+    for value in extension_ids:
+        candidate = str(value).strip().strip("/").replace("chrome-extension://", "")
+        if re.fullmatch(r"[a-p]{32}", candidate):
+            clean_ids.append(candidate)
+        else:
+            print("Ignoring implausible extension ID: {0}".format(candidate))
+
+    if not clean_ids:
+        print("No valid extension IDs were given. An ID is 32 letters, a-p.")
+        return 2
+
+    if os.name == "nt":
+        target = _windows_launcher(script_path)
+    else:
+        target = script_path
+        try:
+            mode = os.stat(str(script_path)).st_mode
+            os.chmod(str(script_path), mode | 0o111)
+        except OSError as exc:
+            print("Warning: could not mark host.py executable ({0})".format(exc))
+
+    manifest = {
+        "name": HOST_NAME,
+        "description": "OpenVideo Downloader companion host (ffmpeg bridge)",
+        "path": str(target),
+        "type": "stdio",
+        "allowed_origins": ["chrome-extension://{0}/".format(i) for i in clean_ids],
+    }
+    blob = json.dumps(manifest, indent=2) + "\n"
+
+    written = []
+
+    if os.name == "nt":
+        import winreg
+
+        manifest_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "OpenVideoDownloader"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = manifest_dir / (HOST_NAME + ".json")
+        manifest_path.write_text(blob, encoding="utf-8")
+        written.append(manifest_path)
+
+        # Per-user keys need no administrator rights.
+        for vendor in (
+            r"Software\Google\Chrome\NativeMessagingHosts",
+            r"Software\Chromium\NativeMessagingHosts",
+            r"Software\Microsoft\Edge\NativeMessagingHosts",
+            r"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts",
+        ):
+            try:
+                key = winreg.CreateKeyEx(
+                    winreg.HKEY_CURRENT_USER, vendor + "\\" + HOST_NAME, 0, winreg.KEY_WRITE
+                )
+                with key:
+                    winreg.SetValueEx(key, None, 0, winreg.REG_SZ, str(manifest_path))
+                print("Registered: HKCU\\{0}\\{1}".format(vendor, HOST_NAME))
+            except OSError as exc:
+                print("Could not write {0}: {1}".format(vendor, exc))
+    else:
+        for directory in _browser_manifest_dirs():
+            parent = directory.parent
+            # Only install for browsers that are actually present.
+            if not parent.exists() and not directory.exists():
+                continue
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                path = directory / (HOST_NAME + ".json")
+                path.write_text(blob, encoding="utf-8")
+                written.append(path)
+                print("Installed: {0}".format(path))
+            except OSError as exc:
+                print("Could not write {0}: {1}".format(directory, exc))
+
+    if not written:
+        print("No supported browser directory was found. Is Chrome installed for this user?")
+        return 1
+
+    info = ffmpeg_info()
+    external = external_downloader_info()
+    print()
+    print("Host script : {0}".format(target))
+    print("Extension   : {0}".format(", ".join(clean_ids)))
+    print("Downloads   : {0}".format(downloads_dir()))
+    if info["available"]:
+        print("ffmpeg      : {0} ({1})".format(info["version"] or "unknown version", info["path"]))
+    else:
+        print("ffmpeg      : NOT FOUND - install it, or Strategy B cannot run.")
+        if sys.platform == "darwin":
+            print("              brew install ffmpeg")
+        elif os.name == "nt":
+            print("              winget install Gyan.FFmpeg")
+        else:
+            print("              sudo apt install ffmpeg")
+    if external["available"]:
+        print("N_m3u8DL-RE : {0}".format(external["path"]))
+    else:
+        print("N_m3u8DL-RE : not found - optional, stabilises Kinescope streams.")
+    print()
+    print("Now fully quit and reopen the browser: native messaging hosts are")
+    print("only re-read at startup.")
+    return 0
+
+
+def uninstall():
+    removed = 0
+    if os.name == "nt":
+        import winreg
+
+        for vendor in (
+            r"Software\Google\Chrome\NativeMessagingHosts",
+            r"Software\Chromium\NativeMessagingHosts",
+            r"Software\Microsoft\Edge\NativeMessagingHosts",
+            r"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts",
+        ):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, vendor + "\\" + HOST_NAME)
+                removed += 1
+            except OSError:
+                pass
+    for directory in _browser_manifest_dirs():
+        path = directory / (HOST_NAME + ".json")
+        try:
+            if path.exists():
+                path.unlink()
+                removed += 1
+        except OSError:
+            pass
+    print("Removed {0} registration(s).".format(removed))
+    return 0
+
+
+def main():
+    args = sys.argv[1:]
+
+    if args and args[0] in ("--install", "-i"):
+        raise SystemExit(install(args[1:]))
+    if args and args[0] in ("--uninstall", "-u"):
+        raise SystemExit(uninstall())
+    if args and args[0] in ("--probe", "-p"):
+        info = ffmpeg_info()
+        print(
+            json.dumps(
+                {
+                    "version": HOST_VERSION,
+                    "ffmpeg": info,
+                    "externalDownloader": external_downloader_info(),
+                    "downloadsDir": str(downloads_dir()),
+                },
+                indent=2,
+            )
+        )
+        raise SystemExit(0 if info["available"] else 1)
+    if args and args[0] in ("--help", "-h"):
+        print(__doc__)
+        raise SystemExit(0)
+
+    # Chrome appends the origin (and on Windows the parent window handle) as
+    # argv, so unrecognised arguments mean "launched by the browser".
+    try:
+        serve()
+    except SystemExit:
+        raise
+    except Exception as exc:  # pragma: no cover
+        log("fatal: {0!r}".format(exc))
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
