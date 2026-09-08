@@ -213,9 +213,17 @@ this usually means ffmpeg is somewhere unusual — symlink it into `/usr/local/b
 **Downloads stall at 0%** — a stream where the CDN blocks extension-origin reads.
 Escalation should be automatic; if it is not, check the host log.
 
-**Stream is labelled "Protected"** — Widevine, PlayReady, FairPlay or Sample-AES was
+**Stream is labelled "Protected"** — Widevine, PlayReady, FairPlay or CENC was
 detected. This is refused by design, in both the extension and the host, and there is no
-setting to override it.
+setting to override it. Sample-AES streams with a plain-HTTP key are different: the card
+shows a red **Record Stream (Auto-Capture)** button instead, which plays the stream in a
+hidden offscreen document and records it. That path is realtime (a one-hour video takes
+an hour) and, when it falls back to recording the tab itself, the tab has to stay open,
+audible and visible for the duration.
+
+**Recording stopped early / is silent** — capture sessions stop at a stalled play head,
+or when the tab is closed, muted or navigated away. Keep the source tab playing until
+the popup reports the recording saved.
 
 **Quality was not what I picked** — if `ffprobe` is missing the host cannot enumerate the
 renditions and lets `ffmpeg` choose. It emits a warning saying so. Install `ffprobe`

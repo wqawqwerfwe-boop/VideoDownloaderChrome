@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>OpenVideo Downloader capture recorder</title>
+	</head>
+	<body>
+		<!--
+			Strategy C: the offscreen recorder. Never shown, never interacted
+			with. It exists because a Sample-AES stream cannot be downloaded
+			segment-by-segment by any engine this extension is willing to ship,
+			but it *plays* fine through the browser's own media stack - so this
+			document plays it, captures the decoded output, and compiles the
+			recording into a normal media file.
+
+			The service worker creates this document with reason USER_MEDIA and
+			sends CAPTURE_RUN; everything after that flows over the same
+			ENGINE_PROGRESS / ENGINE_RESULT / ENGINE_RELEASE protocol the
+			strategy A engine speaks, so the save path (chrome.downloads via the
+			worker) is shared.
+
+			One offscreen document exists per extension: while this page is
+			open, the strategy A engine page is not.
+		-->
+		<script type="module" src="recorder.js"></script>
+	</body>
+</html>

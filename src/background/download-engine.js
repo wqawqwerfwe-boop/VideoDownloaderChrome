@@ -14,7 +14,7 @@
  */
 
 import { MSG, Target, FailureCode, EngineError, broadcast } from "../shared/messages.js"
-import { Strategy, safeFilename, qualityLabel } from "../shared/media-types.js"
+import { Strategy, safeFilename, qualityLabel, isCaptureEligible, SAMPLE_AES_SCHEME } from "../shared/media-types.js"
 import * as registry from "./media-registry.js"
 import { applyRefererRule, removeRules } from "./net-rules.js"
 import {
@@ -29,6 +29,7 @@ import { createLogger } from "../shared/logger.js"
 const log = createLogger("engine")
 
 const OFFSCREEN_URL = "src/offscreen/offscreen.html"
+const RECORDER_URL = "src/offscreen/recorder.html"
 const STORAGE_KEY = "jobs:v1"
 
 export const JobState = Object.freeze({
@@ -105,15 +106,29 @@ const downloadToJob = new Map()
 
 /* ================================================================== *
  * Offscreen document lifecycle
+ *
+ * Chrome allows exactly one offscreen document per extension, and the engine
+ * (offscreen.html, reason BLOBS) and the recorder (recorder.html, reason
+ * USER_MEDIA) need different documents. Every helper below therefore treats
+ * the open document as a slot to be claimed or released, never assumes which
+ * page is loaded in it, and refuses to evict a document that is still serving
+ * an active job.
  * ================================================================== */
 
 /** @type {Promise<void>|null} */
 let creating = null
+/** @type {Promise<void>|null} */
+let creatingRecorder = null
 
-async function offscreenExists() {
+/**
+ * @param {string} [documentUrl] match only a document served from this URL;
+ *   omit it to ask about any offscreen document at all.
+ */
+async function offscreenExists(documentUrl) {
 	if (!chrome.runtime.getContexts) return false
 	const contexts = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })
-	return contexts.length > 0
+	if (!documentUrl) return contexts.length > 0
+	return contexts.some((context) => String(context.documentUrl || "").endsWith(documentUrl))
 }
 
 /**
@@ -124,7 +139,25 @@ async function offscreenExists() {
  * single promise and the "already exists" rejection is treated as success.
  */
 async function ensureOffscreen() {
-	if (await offscreenExists()) return
+	if (await offscreenExists(OFFSCREEN_URL)) return
+
+	// The slot may be occupied by the recorder. An idle one is replaced; a busy
+	// one is not, and the caller fails with ENGINE_UNAVAILABLE - which the
+	// cascade answers by escalating to the companion host, exactly the right
+	// remedy for "cannot run the in-browser engine right now".
+	if (await offscreenExists()) {
+		if (await hasActiveCaptureJobs()) {
+			throw new EngineError(
+				FailureCode.ENGINE_UNAVAILABLE,
+				"The offscreen recorder is busy with a live capture; try again once it finishes"
+			)
+		}
+		try {
+			await chrome.offscreen.closeDocument()
+		} catch {
+			/* closing a document that is already gone is fine */
+		}
+	}
 
 	if (creating) {
 		await creating
@@ -140,7 +173,7 @@ async function ensureOffscreen() {
 		})
 		.catch(async (error) => {
 			// Lost the race with a concurrent call: that is fine.
-			if (await offscreenExists()) return
+			if (await offscreenExists(OFFSCREEN_URL)) return
 			throw error
 		})
 
@@ -151,7 +184,85 @@ async function ensureOffscreen() {
 	}
 }
 
-/** Close the engine document once nothing needs it, to release its memory. */
+/**
+ * Create the offscreen *recorder* document (strategy C) if it is not already
+ * up. The reasons and justification matter: MV3 requires them, and USER_MEDIA
+ * is the declared category for a document whose whole job is to own a
+ * MediaRecorder fed from `getUserMedia` / `captureStream`.
+ */
+async function ensureRecorderDocument() {
+	if (await offscreenExists(RECORDER_URL)) return
+
+	// Claim the single-document slot from an idle engine document. A busy one
+	// is never evicted: tearing it down mid-download would kill another job's
+	// in-flight assembly.
+	if (await offscreenExists()) {
+		if (await hasActiveBrowserJobs()) {
+			throw new EngineError(
+				FailureCode.ENGINE_UNAVAILABLE,
+				"The in-browser engine is busy with another download; retry the recording once it finishes"
+			)
+		}
+		try {
+			await chrome.offscreen.closeDocument()
+		} catch {
+			/* closing a document that is already gone is fine */
+		}
+	}
+
+	if (creatingRecorder) {
+		await creatingRecorder
+		return
+	}
+
+	creatingRecorder = chrome.offscreen
+		.createDocument({
+			url: RECORDER_URL,
+			reasons: ["USER_MEDIA"],
+			justification: "Recording decrypted streaming layers",
+		})
+		.catch(async (error) => {
+			if (await offscreenExists(RECORDER_URL)) return
+			throw error
+		})
+
+	try {
+		await creatingRecorder
+	} finally {
+		creatingRecorder = null
+	}
+}
+
+/** @param {Object} message */
+async function sendToOffscreen(message) {
+	await ensureOffscreen()
+	return chrome.runtime.sendMessage({ ...message, target: Target.OFFSCREEN })
+}
+
+/**
+ * @param {Object} message
+ * Like sendToOffscreen, but for the recorder document. The recorder speaks the
+ * same ENGINE_* protocol (progress, result, release, cancel) for everything
+ * after the initial CAPTURE_RUN, so only the document address differs.
+ */
+async function sendToRecorder(message) {
+	await ensureRecorderDocument()
+	return chrome.runtime.sendMessage({ ...message, target: Target.OFFSCREEN })
+}
+
+/** Whether any job is mid-capture; such a job owns the recorder document. */
+async function hasActiveCaptureJobs() {
+	const jobs = await loadJobs()
+	return Object.values(jobs).some((job) => job.state === JobState.RUNNING && job.strategy === Strategy.CAPTURE)
+}
+
+/** Whether any job is mid-Strategy-A; such a job owns the engine document. */
+async function hasActiveBrowserJobs() {
+	const jobs = await loadJobs()
+	return Object.values(jobs).some((job) => ACTIVE_STATES.has(job.state) && job.strategy === Strategy.BROWSER)
+}
+
+/** Close whichever offscreen document is open once nothing needs it, to release its memory. */
 async function maybeCloseOffscreen() {
 	const jobs = await loadJobs()
 	const busy = Object.values(jobs).some((job) => ACTIVE_STATES.has(job.state))
@@ -163,12 +274,6 @@ async function maybeCloseOffscreen() {
 	} catch {
 		/* nothing depends on this succeeding */
 	}
-}
-
-/** @param {Object} message */
-async function sendToOffscreen(message) {
-	await ensureOffscreen()
-	return chrome.runtime.sendMessage({ ...message, target: Target.OFFSCREEN })
 }
 
 /* ================================================================== *
@@ -260,7 +365,10 @@ export async function startJob({ tabId, entryId, variantIndex = 0 }) {
 
 	// Enforced here as well as in the UI and the offscreen engine. A refusal
 	// that only exists in one layer is a refusal that can be routed around.
-	if (entry.drm?.protected) {
+	// Sample-AES is the one deliberate exception: it is capture-eligible, and
+	// the job is routed to the companion host, whose own manifest inspection
+	// decides between `requires_capture` (strategy C) and a hard DRM refusal.
+	if (entry.drm?.protected && !isCaptureEligible(entry)) {
 		return {
 			ok: false,
 			code: FailureCode.DRM_PROTECTED,
@@ -318,6 +426,20 @@ export async function startJob({ tabId, entryId, variantIndex = 0 }) {
 	jobs[jobId] = job
 	await persist()
 	await reportProgress(job)
+
+	// Sample-AES cannot be handled by Strategy A at all: the in-browser engine
+	// refuses protected playlists rather than assembling undecryptable bytes.
+	// Skip straight to the companion host, which fetches the manifest itself
+	// and answers with either the capture handoff or a hard DRM refusal. (When
+	// the companion is missing, escalate still routes to the recorder.)
+	if (isCaptureEligible(entry)) {
+		void escalate(job, {
+			code: FailureCode.DRM_PROTECTED,
+			message: "Sample-AES stream; asking the companion host to route it",
+			scheme: SAMPLE_AES_SCHEME,
+		})
+		return { ok: true, jobId, segmented: true, filename, strategy: Strategy.CAPTURE }
+	}
 
 	try {
 		await sendToOffscreen({
@@ -408,6 +530,29 @@ export async function handleEngineMessage(message) {
 }
 
 /**
+ * Tell whichever offscreen document produced a finished file that it may drop
+ * it. The document address matters: a capture job's blob lives in the
+ * recorder, and releasing it through sendToOffscreen would evict the recorder
+ * document to spin up the engine page instead.
+ *
+ * @param {Object|null} job
+ * @param {string} jobId
+ */
+async function releaseOffscreenOutput(job, jobId) {
+	try {
+		if (job?.strategy === Strategy.CAPTURE) {
+			if (await offscreenExists(RECORDER_URL)) {
+				await chrome.runtime.sendMessage({ type: MSG.ENGINE_RELEASE, jobId, target: Target.OFFSCREEN })
+			}
+		} else {
+			await sendToOffscreen({ type: MSG.ENGINE_RELEASE, jobId })
+		}
+	} catch {
+		/* the document may already be gone; its blobs die with it */
+	}
+}
+
+/**
  * Hand the assembled blob to chrome.downloads.
  *
  * @param {Object} job
@@ -429,7 +574,7 @@ async function saveAssembledFile(job, result) {
 		downloadToJob.set(downloadId, job.jobId)
 		await updateJob(job.jobId, { downloadId })
 	} catch (error) {
-		await sendToOffscreen({ type: MSG.ENGINE_RELEASE, jobId: job.jobId }).catch(() => {})
+		await releaseOffscreenOutput(job, job.jobId)
 		await finishFailed(job, {
 			code: FailureCode.UNKNOWN,
 			message: error?.message || "The browser refused to save the assembled file",
@@ -448,8 +593,9 @@ chrome.downloads.onChanged.addListener(async (delta) => {
 	const job = await getJob(jobId)
 	if (!job) return
 
-	// Only now is it safe to revoke the blob URL and delete the temp file.
-	await sendToOffscreen({ type: MSG.ENGINE_RELEASE, jobId }).catch(() => {})
+	// Only now is it safe to revoke the blob URL and delete the temp file -
+	// addressed to whichever document produced the output.
+	await releaseOffscreenOutput(job, jobId)
 
 	if (current === "complete") {
 		await finishDone(job)
@@ -469,14 +615,31 @@ chrome.downloads.onChanged.addListener(async (delta) => {
  * Decide whether a Strategy A failure is worth escalating.
  *
  * @param {Object} job
- * @param {{ code: string, message: string, retryable?: boolean }} failure
+ * @param {{ code: string, message: string, retryable?: boolean, scheme?: string|null }} failure
  */
 async function handleStrategyAFailure(job, failure) {
-	// Terminal by construction: retrying a cancel would defy the user, and
-	// retrying a protected stream through ffmpeg would turn Strategy B into a
-	// bypass for the refusal Strategy A enforces.
-	if (failure.code === FailureCode.CANCELLED || failure.code === FailureCode.DRM_PROTECTED) {
+	if (failure.code === FailureCode.CANCELLED) {
 		await finishFailed(job, failure)
+		return
+	}
+
+	// Hard DRM is terminal by construction: retrying a protected stream through
+	// ffmpeg would turn Strategy B into a bypass for the refusal Strategy A
+	// enforces.
+	if (failure.code === FailureCode.DRM_PROTECTED && failure.scheme !== SAMPLE_AES_SCHEME) {
+		await finishFailed(job, failure)
+		return
+	}
+
+	// Sample-AES is exempt from the retryable===false rule that makes a DRM
+	// refusal terminal, and from the scheme check above: Strategy A refused it
+	// without downloading anything (there is no sample-level decryptor to
+	// bypass), and the companion host does not decrypt it either - it routes
+	// the job to the offscreen recorder. The host makes that call from its own
+	// manifest inspection, so escalating here hands the decision to the layer
+	// equipped to make it.
+	if (failure.code === FailureCode.DRM_PROTECTED && failure.scheme === SAMPLE_AES_SCHEME && !job.triedCompanion) {
+		await escalate(job, failure)
 		return
 	}
 
@@ -497,8 +660,39 @@ async function handleStrategyAFailure(job, failure) {
 async function escalate(job, reason) {
 	log.info(`escalating job ${job.jobId} to the companion host (${reason.code})`)
 
+	const entry = await registry.get(job.tabId, job.entryId)
+	if (!entry) {
+		await finishFailed(job, { code: FailureCode.UNKNOWN, message: "That item is no longer available." })
+		return
+	}
+
 	const probe = await probeCompanion()
 	if (probe.state !== CompanionState.READY) {
+		// No host to authorise a capture handoff - but if the extension's own
+		// probe already flagged the stream as Sample-AES, route it to the
+		// recorder anyway rather than dead-ending the job. The recorder
+		// re-fetches and re-parses the manifest before recording anything, so
+		// hard DRM still cannot slip through on the extension's say-so alone.
+		if (isCaptureEligible(entry)) {
+			log.info(`companion unavailable; routing sample-aes job ${job.jobId} straight to the recorder`)
+			try {
+				const payload = await buildCompanionPayload({
+					jobId: job.jobId,
+					entry,
+					variant: entry.variants?.[job.variantIndex] ?? null,
+					filename: job.filename,
+					duration: entry.duration,
+				})
+				await startCaptureHandoff(job, payload, entry)
+			} catch (error) {
+				await finishFailed(job, {
+					code: error instanceof EngineError ? error.code : FailureCode.UNKNOWN,
+					message: error?.message || "The capture handoff could not be prepared",
+				})
+			}
+			return
+		}
+
 		// Report the original Strategy A failure as the cause, with the companion
 		// as the remedy - that is the actionable framing.
 		await finishFailed(job, {
@@ -522,17 +716,14 @@ async function escalate(job, reason) {
 	})
 	if (updated) await reportProgress(updated)
 
-	const entry = await registry.get(job.tabId, job.entryId)
-	if (!entry) {
-		await finishFailed(job, { code: FailureCode.UNKNOWN, message: "That item is no longer available." })
-		return
-	}
-
 	const controller = new AbortController()
 	controllers.set(job.jobId, controller)
 
+	/** The companion payload; also the payload the recorder inherits on handoff. */
+	let payload = null
+
 	try {
-		const payload = await buildCompanionPayload({
+		payload = await buildCompanionPayload({
 			jobId: job.jobId,
 			entry,
 			variant: entry.variants?.[job.variantIndex] ?? null,
@@ -553,11 +744,199 @@ async function escalate(job, reason) {
 		})
 		await finishDone(done ?? job)
 	} catch (error) {
+		// The host inspected the manifest, found Sample-AES, and answered with
+		// the specialised capture state. This is a routing decision, not a
+		// failure: the job continues in the offscreen recorder with the same
+		// payload (manifest link, cookies, referer and auth headers) it would
+		// have been downloaded with.
+		if (error instanceof EngineError && error.code === FailureCode.REQUIRES_CAPTURE && payload) {
+			controllers.delete(job.jobId)
+			await startCaptureHandoff(job, payload, entry)
+			return
+		}
+
 		const mapped =
 			error instanceof EngineError
 				? error
 				: new EngineError(FailureCode.COMPANION_FAILED, error?.message || "The companion host failed")
 		await finishFailed(job, { code: mapped.code, message: mapped.message })
+	}
+}
+
+/* ================================================================== *
+ * Strategy C: the offscreen capture handoff
+ * ================================================================== */
+
+/**
+ * Hand a job to the offscreen recorder (src/offscreen/recorder.html).
+ *
+ * The payload is the same one the companion host was given - manifest link,
+ * cookies, referer and page authentication headers - so the recorder fetches
+ * the stream as the authorised session, plays it through the browser's own
+ * media stack, and records the decoded (i.e. already-decrypted) output.
+ *
+ * @param {Object} job
+ * @param {Object} payload the companion payload (manifestUrl, headers, ...)
+ * @param {Object} entry the registry entry, for page context
+ */
+async function startCaptureHandoff(job, payload, entry) {
+	log.info(`routing job ${job.jobId} to the offscreen recorder`)
+
+	const updated = await updateJob(job.jobId, {
+		strategy: Strategy.CAPTURE,
+		triedCompanion: true,
+		state: JobState.RUNNING,
+		phase: "recording",
+		percent: 0,
+		bytesReceived: 0,
+		speed: 0,
+		etaSeconds: null,
+	})
+	if (updated) await reportProgress(updated)
+
+	// The tab-capture streamId is acquired here because chrome.tabCapture does
+	// not exist inside offscreen documents - only the service worker can mint
+	// one. Best effort: the recorder has routes that do not need it, and if
+	// none work it reports a precise failure.
+	let streamId = null
+	if (Number.isInteger(job.tabId) && chrome.tabCapture?.getMediaStreamId) {
+		try {
+			streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: job.tabId })
+		} catch (error) {
+			log.debug("tab capture streamId unavailable", error)
+		}
+	}
+
+	try {
+		await sendToRecorder({
+			type: MSG.CAPTURE_RUN,
+			jobId: job.jobId,
+			manifestUrl: payload.manifestUrl,
+			kind: payload.kind ?? null,
+			filename: job.filename,
+			headers: payload.headers ?? {},
+			duration: payload.duration ?? entry.duration ?? null,
+			quality: payload.quality ?? null,
+			tabId: job.tabId,
+			streamId,
+			pageUrl: entry.pageUrl ?? null,
+			title: entry.title ?? entry.pageTitle ?? null,
+		})
+	} catch (error) {
+		await finishFailed(job, {
+			code: FailureCode.ENGINE_UNAVAILABLE,
+			message: error?.message || "The offscreen recorder could not be started",
+		})
+	}
+}
+
+/**
+ * Make the source tab actually play the stream, and watch for it ending.
+ * Requested by the recorder when it falls back to tab capture: the tab's own
+ * player is the thing decrypting a Sample-AES stream, so playback has to run
+ * for there to be anything to record.
+ *
+ * @param {string} jobId
+ */
+export async function prepareTabForCapture(jobId) {
+	const job = await getJob(jobId)
+	if (!job || !Number.isInteger(job.tabId) || !chrome.scripting?.executeScript) {
+		return { ok: false, found: false, duration: null }
+	}
+
+	// The player frequently lives in an embed iframe (it does on Kinescope), so
+	// every frame gets the nudge and the first one with a video element wins.
+	let results = []
+	try {
+		results = await chrome.scripting.executeScript({
+			target: { tabId: job.tabId, allFrames: true },
+			func: nudgeTabPlayback,
+			args: [jobId],
+		})
+	} catch (error) {
+		log.debug("could not reach the source tab", error)
+		return { ok: false, found: false, duration: null }
+	}
+
+	for (const injection of results ?? []) {
+		if (injection?.result?.found) {
+			return { ok: true, found: true, duration: injection.result.duration || null }
+		}
+	}
+	return { ok: true, found: false, duration: null }
+}
+
+/**
+ * Runs inside the source tab (all frames). Deliberately self-contained:
+ * chrome.scripting serialises this function's source, so it may not reference
+ * anything from module scope. Registered at the top level for the same reason.
+ *
+ * @param {string} jobId
+ */
+function nudgeTabPlayback(jobId) {
+	const videos = Array.from(document.querySelectorAll("video"))
+	const pick = videos.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight)[0]
+	if (!pick) return { found: false, duration: null }
+
+	// Capture records what the tab renders, so a paused player means a frozen
+	// recording. Starting it is best effort - autoplay refusal is possible.
+	if (pick.paused) {
+		try {
+			const p = pick.play()
+			if (p && typeof p.catch === "function") p.catch(() => {})
+		} catch {
+			/* autoplay policies; nothing more this can do */
+		}
+	}
+
+	// Replace any watcher from a previous attempt, then notify the worker when
+	// the tab's own player finishes. The literal matches MSG.CAPTURE_TAB_ENDED.
+	if (window.__ovdCaptureWatch) {
+		for (const off of window.__ovdCaptureWatch) {
+			try {
+				off()
+			} catch {
+				/* already detached */
+			}
+		}
+	}
+	const onEnded = () => {
+		try {
+			// The literal matches MSG.CAPTURE_TAB_ENDED. The rejection is caught
+			// because this runs in the page long after anyone is listening for
+			// errors, and the recorder's own timers bound the session anyway.
+			const sent = chrome.runtime.sendMessage({ type: "capture:tab-ended", jobId })
+			if (sent && typeof sent.catch === "function") sent.catch(() => {})
+		} catch {
+			/* the worker may be asleep; the recorder's own timers bound the session */
+		}
+	}
+	pick.addEventListener("ended", onEnded)
+	window.__ovdCaptureWatch = [() => pick.removeEventListener("ended", onEnded)]
+
+	return { found: true, duration: Number.isFinite(pick.duration) ? pick.duration : null }
+}
+
+/**
+ * Ask the recorder to stop a session. `finalize` keeps what has been recorded
+ * so far; without it the session is discarded as a cancellation.
+ *
+ * @param {string} jobId
+ * @param {{ finalize?: boolean }} [options]
+ */
+export async function requestCaptureStop(jobId, { finalize = false } = {}) {
+	if (!(await offscreenExists(RECORDER_URL))) return { ok: true, stopped: false }
+	try {
+		await chrome.runtime.sendMessage({
+			type: MSG.ENGINE_CANCEL,
+			jobId,
+			finalize,
+			target: Target.OFFSCREEN,
+		})
+		return { ok: true, stopped: true }
+	} catch (error) {
+		log.debug("could not reach the recorder", error)
+		return { ok: false, stopped: false }
 	}
 }
 
@@ -594,6 +973,10 @@ export async function cancelJob(jobId) {
 		// have the port, so try both.
 		controllers.get(jobId)?.abort()
 		cancelCompanionDownload(jobId)
+	} else if (job.strategy === Strategy.CAPTURE) {
+		// Must not go through sendToOffscreen: that would try to spin up the
+		// *engine* document and evict the recorder mid-session.
+		await requestCaptureStop(jobId).catch(() => {})
 	} else {
 		await sendToOffscreen({ type: MSG.ENGINE_CANCEL, jobId }).catch(() => {})
 	}

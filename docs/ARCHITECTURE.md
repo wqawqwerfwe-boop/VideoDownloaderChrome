@@ -11,6 +11,7 @@ strategies and stops at the first one that works.
 | — | **Direct** | service worker | one addressable file (`.mp4`, `.webm`, `.mp3`) | none — `chrome.downloads` does it, with native pause/resume |
 | **A** | **In-browser fetch + remux** | offscreen document | HLS / DASH whose segments are readable with our host permissions | RAM proportional to output size |
 | **B** | **Native FFmpeg companion** | local Python host | anything ffmpeg can read: odd codecs, huge files, hostile CORS | one-time install outside the browser |
+| **C** | **Offscreen capture recorder** | offscreen document | Sample-AES streams (e.g. Kinescope) that no download engine may touch but any player can play | realtime: the recording lasts as long as the stream |
 
 The boundary between A and B is not a quality judgement, it is a capability
 boundary. Strategy A is preferred because it needs nothing installed; Strategy B
@@ -63,12 +64,14 @@ src/background/
   probe.js                        fetches + parses manifests so the ladder is ready early
   badge.js                        per-tab counter
   net-rules.js                    dynamic Referer/Origin rules for extension fetches
-  download-engine.js              job manager; owns the A -> B cascade
+  download-engine.js              job manager; owns the A -> B -> C cascade
   companion.js                    Strategy B transport (connectNative + sendNativeMessage)
 
 src/offscreen/
   offscreen.html                  host page for the engine
   downloader.js                   Strategy A: fetch pool, decrypt, assemble, save
+  recorder.html                   host page for the capture recorder (strategy C)
+  recorder.js                     strategy C: playback routes + MediaRecorder + save
 
 src/engines/
   hls/parser.js                   RFC 8216 master + media playlists
@@ -102,6 +105,12 @@ companion_app/                    Strategy B native host (Python + ffmpeg)
                                                    transmux (mux.js)       v
                                                    assemble (mp4box.js) host.py -> ffmpeg
                                                             │              │
+                                                            │        sample-aes manifest?
+                                                            │              │ requires_capture
+                                                            │              v
+                                                            │      offscreen/recorder
+                                                            │        native / MSE / tab
+                                                            │        MediaRecorder
                                                             └──> file <────┘
 ```
 
@@ -123,11 +132,31 @@ Strategy B is not a back door around Strategy A's check.
 published in the manifest and served over HTTP to any client, precisely so that
 every conformant player can decrypt it. Handling it is table stakes for reading
 HLS at all, and involves no protected key material and no circumvention of an
-access control. `SAMPLE-AES` is treated as DRM, because in practice it is
-FairPlay.
+access control.
 
-The practical reason to draw the line here and enforce it in both strategies:
+**Routed, not downloaded: Sample-AES.** `METHOD=SAMPLE-AES` sits in between.
+With a plain `http(s)` key URI it uses the same key delivery model as AES-128 —
+the key ships next to the playlist — but the encryption is applied inside
+H.264/AAC samples, and no engine this extension ships decrypts at sample level.
+`SAMPLE-AES` *with FairPlay delivery* (`skd://`, `streamingkeydelivery`) is
+hard DRM and refused like the rest; the key-format check always wins over the
+method check.
+
+For the transport-encryption form the cascade takes a third route. The
+companion host, after fetching and inspecting the manifest itself, answers with
+`requires_capture` instead of a download, and the job continues in
+`src/offscreen/recorder.js` (strategy C): the stream is played through the
+browser's own media stack — natively where the platform supports it, via a
+MediaSource elsewhere, or by recording the source tab's own player — and the
+decoded output is captured with `MediaRecorder`. Nothing is decrypted that the
+browser would not decrypt to play the stream anyway, no key material is ever
+extracted or forwarded, and the recorder re-checks the manifest for hard-DRM
+signatures before capturing anything. The trade-off is honest and visible in
+the UI: recording is realtime and re-encoded, so it is offered as a clearly
+labelled record button, never as a download.
+
+The practical reason to draw the line here and enforce it in every strategy:
 content behind a real DRM system is behind a technical protection measure, and
-defeating one is a different act — legally and ethically — from remuxing a
-stream you can already fetch. Users remain responsible for having the right to
-download what they point this at.
+defeating one is a different act — legally and ethically — from remuxing or
+recording a stream you can already watch. Users remain responsible for having
+the right to download what they point this at.

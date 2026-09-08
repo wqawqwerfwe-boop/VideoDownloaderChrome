@@ -18,6 +18,27 @@ export const Strategy = Object.freeze({
 	CAPTURE: "capture",
 })
 
+/**
+ * The HLS DRM scheme string for `METHOD=SAMPLE-AES` (see
+ * `detectHlsDrm` in engines/hls/parser.js and the companion host's
+ * `detect_sample_aes`). Unlike licence-server DRM, Sample-AES with a plain
+ * http(s) key URI is transport encryption whose key is published in the
+ * playlist - the same delivery model as AES-128 - so these streams are
+ * capture-eligible rather than refused.
+ */
+export const SAMPLE_AES_SCHEME = "sample-aes"
+
+/**
+ * Whether a registry entry is Sample-AES protected and therefore routable to
+ * the offscreen recorder (strategy C). Hard DRM - Widevine, PlayReady,
+ * FairPlay, CENC - never matches: the scheme must be exactly "sample-aes".
+ *
+ * @param {{ drm?: { protected: boolean, scheme: string|null } }|null} entry
+ */
+export function isCaptureEligible(entry) {
+	return Boolean(entry?.drm?.protected) && entry.drm?.scheme === SAMPLE_AES_SCHEME
+}
+
 const MIME_HLS = new Set([
 	"application/vnd.apple.mpegurl",
 	"application/x-mpegurl",

@@ -8,8 +8,9 @@ No artificial throttling or cooling periods. MIT licensed.
 
 ## Status
 
-`v0.2.0` — **complete**. Detection, both download strategies and the native companion
-host are implemented. No build step: clone and load unpacked.
+`v0.3.0` — **complete**. Detection, both download strategies, the native companion
+host and the Sample-AES capture recorder are implemented. No build step: clone and
+load unpacked.
 
 | Capability | State |
 | --- | --- |
@@ -25,6 +26,7 @@ host are implemented. No build step: clone and load unpacked.
 | Live progress, speed and ETA in popup | Working |
 | Automatic fallback to the companion host | Working |
 | Companion FFmpeg host (Strategy B) | Working |
+| Sample-AES capture recorder (Strategy C) | Working |
 
 ### Known limits
 
@@ -35,6 +37,12 @@ host are implemented. No build step: clone and load unpacked.
   escalates to the companion. Single-source streams (audio already muxed into the video
   segments, which is the common HLS case) stream to disk and have no such ceiling.
 - Live streams are labelled and refused. There is no meaningful "100%" for them.
+- **Capture (Strategy C) is realtime and re-encoded.** A recording takes as long as the
+  stream, is bounded to the browser's `MediaRecorder` output (H.264/AAC MP4 where
+  supported, otherwise VP8/VP9+Opus WebM), and — when it falls back to recording the
+  source tab — captures the whole tab surface, so the tab must stay open, audible and
+  visible until it finishes. Hard DRM (Widevine, PlayReady, FairPlay, CENC) is never
+  captured; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#the-drm-boundary).
 - `manifest.json` intentionally ships **without** an `icons` key — see
   [`docs/INSTALL.md`](docs/INSTALL.md#about-the-missing-icons).
 
@@ -59,14 +67,19 @@ mode worth knowing about, is in [`docs/INSTALL.md`](docs/INSTALL.md).
 This project implements **generic** stream handling that works across a wide range of sites.
 It deliberately does **not** include:
 
-- DRM circumvention of any kind (Widevine / PlayReady / FairPlay / Sample-AES). Protected
+- DRM circumvention of any kind (Widevine / PlayReady / FairPlay / CENC). Protected
   streams are detected and reported as unsupported rather than attempted. The companion
-  host repeats this check independently, so it cannot be used to route around the refusal.
+  host repeats this check independently, so it cannot be used to route around the refusal,
+  and the capture recorder re-checks every manifest before recording.
 - Site-specific modules built to defeat a particular platform's access controls.
 
 Standard HLS AES-128 transport encryption (RFC 8216, key published in the manifest) is
 supported, as it is in every conformant HLS player. This is not DRM and is not treated as
 such: there is no licence server, no key escrow and no usage policy attached to it.
+`SAMPLE-AES` with the same plain-HTTP key delivery is *recorded* rather than downloaded
+(Strategy C, see the architecture docs): the stream is played by the browser's own media
+stack and the decoded output captured — no key is extracted, and `SAMPLE-AES` delivered
+through FairPlay (`skd://`) is refused like any other DRM.
 
 Use this on content you have the right to download.
 

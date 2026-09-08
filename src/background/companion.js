@@ -13,8 +13,9 @@
  * @module background/companion
  */
 
-import { FailureCode, EngineError } from "../shared/messages.js"
+import { FailureCode, EngineError, CaptureHandoff } from "../shared/messages.js"
 import { createLogger } from "../shared/logger.js"
+import { isCaptureEligible } from "../shared/media-types.js"
 
 const log = createLogger("companion")
 
@@ -211,8 +212,17 @@ function originOf(url) {
 export async function buildCompanionPayload({ jobId, entry, variant, filename, duration }) {
 	// Strategy B must not become a way around the DRM refusal that Strategy A
 	// enforces. The host checks this independently as well.
-	if (entry.drm?.protected) {
-		throw new EngineError(FailureCode.DRM_PROTECTED, `Stream is ${entry.drm.scheme}-protected`, { retryable: false })
+	//
+	// Sample-AES is the one deliberate exception: it is sent through so the
+	// host - which fetches and inspects the manifest itself - can make the
+	// authoritative call. The host answers `requires_capture` (the payload is
+	// forwarded to the offscreen recorder) or refuses it as hard DRM; nothing
+	// is decrypted on this side either way.
+	if (entry.drm?.protected && !isCaptureEligible(entry)) {
+		throw new EngineError(FailureCode.DRM_PROTECTED, `Stream is ${entry.drm.scheme}-protected`, {
+			retryable: false,
+			scheme: entry.drm.scheme,
+		})
 	}
 
 	const pageUrl = entry.pageUrl || null
@@ -278,6 +288,10 @@ export async function runCompanionDownload({ payload, onProgress, signal }) {
 	} catch (error) {
 		if (error instanceof EngineError && error.code === FailureCode.CANCELLED) throw error
 
+		// A capture handoff is a routed answer from a live host, not a transport
+		// failure; retrying the same payload one-shot would just repeat it.
+		if (error instanceof EngineError && error.code === FailureCode.REQUIRES_CAPTURE) throw error
+
 		// Only fall back when the port produced nothing at all; a host that
 		// reported a real error should not have that error replaced.
 		if (error?.portProducedOutput) throw error
@@ -285,6 +299,20 @@ export async function runCompanionDownload({ payload, onProgress, signal }) {
 		log.debug("port transport unavailable; retrying one-shot", error)
 		return await runOneShot({ payload, signal, portError: error })
 	}
+}
+
+/**
+ * Whether a host packet is the Sample-AES capture handoff. The host emits
+ * `type`, `status` and `code` together, but any one of them is enough to
+ * recognise it, so older hosts that only spell one field still route.
+ * @param {Object} message
+ */
+function isCaptureHandoff(message) {
+	return (
+		message?.type === CaptureHandoff.STATUS ||
+		message?.status === CaptureHandoff.STATUS ||
+		message?.code === CaptureHandoff.CODE_SAMPLE_AES
+	)
 }
 
 /**
@@ -347,6 +375,19 @@ function runOverPort({ payload, onProgress, signal }) {
 
 		port.onMessage.addListener((message) => {
 			produced = true
+
+			// The capture handoff is checked before the type switch because the
+			// host may spell it with `type`, `status`, or only the `code` - and
+			// an unrecognised terminal packet would otherwise leave this port
+			// promise unsettled until the user cancels.
+			if (isCaptureHandoff(message)) {
+				const handoff = new EngineError(FailureCode.REQUIRES_CAPTURE, message?.message || "Sample-AES detected", {
+					retryable: false,
+				})
+				handoff.portProducedOutput = true
+				finish(reject, handoff)
+				return
+			}
 
 			switch (message?.type) {
 				case "progress":
@@ -444,6 +485,12 @@ async function runOneShot({ payload, signal, portError }) {
 			size: typeof reply.size === "number" ? reply.size : null,
 			warnings: Array.isArray(reply.warnings) ? reply.warnings.map(String) : [],
 		}
+	}
+
+	// The Sample-AES handoff resolves `sendNativeMessage` on its own terms; a
+	// bare "companion failed" here would bury the routing decision.
+	if (isCaptureHandoff(reply)) {
+		throw new EngineError(FailureCode.REQUIRES_CAPTURE, reply?.message || "Sample-AES detected", { retryable: false })
 	}
 
 	throw new EngineError(

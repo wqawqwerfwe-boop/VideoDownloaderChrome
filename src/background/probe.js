@@ -13,7 +13,7 @@
 
 import { parsePlaylist, parseMediaPlaylist } from "../engines/hls/parser.js"
 import { parseMpd } from "../engines/dash/mpd-parser.js"
-import { MediaKind, estimateBytes } from "../shared/media-types.js"
+import { MediaKind, estimateBytes, SAMPLE_AES_SCHEME } from "../shared/media-types.js"
 import { patch, get } from "./media-registry.js"
 import { createLogger } from "../shared/logger.js"
 
@@ -78,7 +78,7 @@ export async function probeEntry(tabId, entryId) {
 		if (entry.kind === MediaKind.HLS) {
 			const parsed = parsePlaylist(text, finalUrl)
 
-			if (parsed.drm?.protected) {
+			if (parsed.drm?.protected && parsed.drm.scheme !== SAMPLE_AES_SCHEME) {
 				return await patch(tabId, entryId, {
 					probeState: "unsupported",
 					drm: parsed.drm,
@@ -86,11 +86,21 @@ export async function probeEntry(tabId, entryId) {
 				})
 			}
 
+			// Sample-AES stays flagged but not blocked: its key ships in the
+			// playlist, so the ladder is still real and the stream is
+			// recordable (strategy C) even though no engine downloads it
+			// directly. The flag rides along so the UI and the engine can
+			// present the record affordance instead of a download button.
+			if (parsed.drm?.protected) {
+				await patch(tabId, entryId, { drm: parsed.drm, probeError: null })
+			}
+
 			if (parsed.type === "master") {
 				// Duration lives in the media playlists, so sample the top variant to
 				// turn declared bandwidth into a usable size estimate.
 				let duration = 0
 				let isLive = false
+				let variantDrm = null
 				const probeTarget = parsed.variants[0]
 				if (probeTarget) {
 					try {
@@ -98,9 +108,23 @@ export async function probeEntry(tabId, entryId) {
 						const media = parseMediaPlaylist(sub.text, sub.finalUrl)
 						duration = media.duration
 						isLive = media.isLive
+						variantDrm = media.drm?.protected ? media.drm : null
 					} catch (err) {
 						log.debug("variant sample failed", err?.message)
 					}
+				}
+
+				// The key may be declared only on the variant playlists, not the
+				// master; carry that finding onto the entry for the same reason.
+				if (variantDrm) {
+					if (variantDrm.scheme !== SAMPLE_AES_SCHEME) {
+						return await patch(tabId, entryId, {
+							probeState: "unsupported",
+							drm: variantDrm,
+							probeError: `Protected stream (${variantDrm.scheme})`,
+						})
+					}
+					await patch(tabId, entryId, { drm: variantDrm, probeError: null })
 				}
 
 				const variants = parsed.variants.map((v, i) => ({

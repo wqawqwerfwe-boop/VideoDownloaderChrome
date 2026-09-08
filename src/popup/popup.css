@@ -209,6 +209,21 @@ body {
 	font-weight: 600;
 }
 
+/* Sample-AES: capture-eligible, not refused - hence a warning tint, not red. */
+.chip-warn {
+	color: var(--warn);
+	border-color: var(--warn);
+	background: var(--warn-bg);
+}
+
+/* Live capture session in progress. */
+.chip-rec {
+	color: #fff;
+	background: #dc2626;
+	border-color: transparent;
+	font-weight: 700;
+}
+
 /* ---------------- rows ---------------- */
 
 .card-body {
@@ -353,6 +368,29 @@ button:focus-visible {
 
 .primary:hover:not(:disabled) {
 	filter: brightness(1.07);
+}
+
+/*
+ * The record affordance for Sample-AES streams: warning-themed, never
+ * disabled, and explicit that clicking starts a capture rather than a
+ * segment download.
+ */
+.record {
+	background: var(--warn-bg);
+	color: var(--warn);
+	border-color: var(--warn);
+	font-size: 12px;
+	font-weight: 600;
+	padding: 4px 10px;
+}
+
+.record:hover:not(:disabled) {
+	filter: brightness(1.06);
+}
+
+/* Capture-session hint under a Sample-AES ladder. */
+.hint-capture {
+	color: var(--warn);
 }
 
 .ghost {

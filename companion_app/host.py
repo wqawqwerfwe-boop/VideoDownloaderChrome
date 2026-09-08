@@ -30,6 +30,19 @@ Responses emitted:
     {"type": "done",    "jobId": "...", "path": "...", "size": 1234,
      "warnings": [...]}
     {"type": "error",   "jobId": "...", "code": "...", "message": "..."}
+    {"type": "requires_capture", "status": "requires_capture", "jobId": "...",
+     "code": "sample_aes_detected",
+     "message": "Stream uses Sample-AES encryption. Routing to offscreen recorder."}
+
+The last one is a *handoff*, not a failure. Widevine, PlayReady, FairPlay and
+CENC are refused outright (see detect_drm). Sample-AES - HLS transport
+encryption whose key is published in the playlist, the same key delivery model
+as plain AES-128 - cannot be handled by ffmpeg or N_m3u8DL-RE without key
+plumbing this host refuses to provide, so the job is handed back to the
+extension, which plays the stream in a hidden document and records the decoded
+output (strategy C). The extension decides nothing on its own here: this host,
+which has actually fetched and inspected the manifest, is what says the stream
+is capture-eligible.
 
 Download engines:
 
@@ -64,7 +77,7 @@ import urllib.request
 from pathlib import Path
 
 HOST_NAME = "com.unrestricted.video.downloader"
-HOST_VERSION = "0.4.0"
+HOST_VERSION = "0.5.0"
 PROTOCOL_VERSION = 1
 
 # Chrome refuses to send more than 1 MB to a host and will not accept more than
@@ -81,6 +94,9 @@ CODE_UNSUPPORTED = "unsupported_codec"
 # Matches FailureCode.NETWORK_TIMEOUT. Used when the manifest itself could not
 # be read, which is a different diagnosis from "the download failed".
 CODE_NETWORK = "network_timeout"
+# Capture handoff, shared with src/shared/messages.js. This is not a failure:
+# the job continues in the extension's offscreen recorder instead of here.
+CODE_SAMPLE_AES = "sample_aes_detected"
 
 PROGRESS_INTERVAL = 0.5
 MANIFEST_FETCH_TIMEOUT = 15
@@ -434,18 +450,30 @@ def _is_segmented_engine_host(url):
 
 
 # ====================================================================== #
-# DRM refusal
+# DRM refusal and the Sample-AES capture handoff
 # ====================================================================== #
 
-# Systems that mean "licence server required". Sample-AES is included because
-# it is FairPlay's transport form.
+# Systems that mean "licence server required". These are hard refusals: no
+# engine in this host, and no tier of the extension's cascade, may download
+# them.
 _DRM_PATTERNS = (
     ("widevine", re.compile(r"widevine|edef8ba9-79d6-4ace-a3c8-27dcd51d21ed", re.I)),
     ("playready", re.compile(r"playready|9a04f079-9840-4286-ab92-e65be0885f95", re.I)),
     ("fairplay", re.compile(r"com\.apple\.streamingkeydelivery|skd://|94ce86fb-07ff-4f43-adb8-93d2fa968ca2", re.I)),
-    ("sample-aes", re.compile(r"METHOD=SAMPLE-AES", re.I)),
     ("cenc", re.compile(r"<cenc:pssh|ContentProtection[^>]+cenc", re.I)),
 )
+
+# SAMPLE-AES, by contrast, is HLS *transport* encryption (RFC 8218): the key is
+# published in the playlist and served over plain HTTP, exactly like the
+# AES-128 method this host has always allowed ffmpeg to handle. It only becomes
+# FairPlay when the key is delivered through skd:// / streamingkeydelivery,
+# which _DRM_PATTERNS above catches first. A SAMPLE-AES match therefore never
+# overrides a hard-DRM refusal: detect_drm is consulted before
+# detect_sample_aes, so a manifest carrying both is refused, not routed.
+#
+# The optional -CTR / -CENC / -CBCS suffixes (CMAF spellings) are covered by
+# the prefix match.
+_SAMPLE_AES_PATTERN = re.compile(r"METHOD=SAMPLE-AES", re.I)
 
 
 def fetch_manifest(url, headers):
@@ -495,13 +523,18 @@ def fetch_manifest(url, headers):
 
 def detect_drm(manifest_text):
     """
-    Return the DRM scheme name, or None.
+    Return the hard DRM scheme name, or None.
+
+    This is the refusal gate: Widevine, PlayReady, FairPlay key delivery and
+    CENC mean "licence server required", and this host will have nothing to do
+    with them. Sample-AES is deliberately *not* matched here - it is routed
+    separately by detect_sample_aes - because with a plain http(s) key URI it
+    is ordinary transport encryption with the key served next to the playlist.
 
     Deliberately does *not* treat METHOD=AES-128 as DRM. Plain AES-128 is
     ordinary HLS transport encryption with the key served next to the playlist;
     ffmpeg handles it natively and Strategy A decrypts it in-browser. Refusing
-    it would break a large share of perfectly normal streams, while letting
-    Sample-AES through would turn this host into a DRM bypass.
+    it would break a large share of perfectly normal streams.
 
     Note that a falsy `manifest_text` yields None, which is indistinguishable
     from a clean manifest. Callers must reject an unreadable manifest *before*
@@ -515,12 +548,31 @@ def detect_drm(manifest_text):
     return None
 
 
+def detect_sample_aes(manifest_text):
+    """
+    Whether the manifest declares Sample-AES (or a CMAF sample-block variant).
+
+    True means "capture-eligible", never "decrypted here": neither ffmpeg nor
+    N_m3u8DL-RE is ever invoked with Sample-AES key material (see
+    _assert_no_key_material). The caller answers with the requires_capture
+    handoff so the extension's offscreen recorder can play the stream through
+    the browser's own media stack and record the decoded output.
+
+    Call only after detect_drm has returned None, so that FairPlay-delivered
+    Sample-AES (skd:// / streamingkeydelivery) is refused rather than routed.
+    """
+    if not manifest_text:
+        return False
+    return bool(_SAMPLE_AES_PATTERN.search(manifest_text))
+
+
 # Flags that would hand an external downloader the means to decrypt a protected
-# stream. The DRM gate in handle_download already refuses Widevine, PlayReady,
-# FairPlay, Sample-AES and CENC before any engine is chosen, so none of these
-# should ever be constructed. This list makes that a checked invariant rather
-# than an assumption: N_m3u8DL-RE is perfectly capable of DRM decryption when
-# given key material, and this host must never be the thing that supplies it.
+# stream. The gate in handle_download refuses Widevine, PlayReady, FairPlay and
+# CENC, and routes Sample-AES to the capture handoff, before any engine is
+# chosen - so neither engine is ever even *offered* an encrypted stream. This
+# list makes that a checked invariant rather than an assumption: N_m3u8DL-RE is
+# perfectly capable of DRM decryption when given key material, and this host
+# must never be the thing that supplies it.
 _KEY_MATERIAL_FLAGS = frozenset(
     {
         "--key",
@@ -1129,15 +1181,6 @@ def handle_download(request, streaming):
                 "message": "Refusing a non-HTTP manifest URL",
             }
 
-        info = ffmpeg_info()
-        if not info["available"]:
-            return {
-                "type": "error",
-                "jobId": job_id,
-                "code": CODE_FAILED,
-                "message": "ffmpeg was not found on PATH. Install it and retry.",
-            }
-
         headers = request.get("headers") or {}
 
         # Independent DRM refusal. The extension already blocks protected
@@ -1171,6 +1214,32 @@ def handle_download(request, streaming):
                 "jobId": job_id,
                 "code": CODE_DRM,
                 "message": "This stream is {0}-protected. The companion host does not circumvent DRM.".format(scheme),
+            }
+
+        # Sample-AES: not a refusal and not a download. Neither engine below
+        # can handle it without key material this host refuses to pass, so the
+        # job is handed back with a specialised capture state and the extension
+        # records the stream through its own offscreen document instead. This
+        # check sits before the ffmpeg availability check on purpose: the
+        # capture path never touches ffmpeg, so a user without it installed can
+        # still be routed onwards.
+        if detect_sample_aes(manifest_text):
+            log("routing {0} to the offscreen recorder (sample-aes)".format(manifest_url))
+            return {
+                "type": "requires_capture",
+                "status": "requires_capture",
+                "jobId": job_id,
+                "code": CODE_SAMPLE_AES,
+                "message": "Stream uses Sample-AES encryption. Routing to offscreen recorder.",
+            }
+
+        info = ffmpeg_info()
+        if not info["available"]:
+            return {
+                "type": "error",
+                "jobId": job_id,
+                "code": CODE_FAILED,
+                "message": "ffmpeg was not found on PATH. Install it and retry.",
             }
 
         if job.cancelled.is_set():
