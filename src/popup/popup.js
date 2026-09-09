@@ -13,7 +13,16 @@
  */
 
 import { MSG, FailureCode } from "../shared/messages.js"
-import { MediaKind, Strategy, humanBytes, humanBitrate, humanDuration, qualityLabel } from "../shared/media-types.js"
+import {
+	MediaKind,
+	Strategy,
+	SAMPLE_AES_SCHEME,
+	isCaptureEligible,
+	humanBytes,
+	humanBitrate,
+	humanDuration,
+	qualityLabel,
+} from "../shared/media-types.js"
 
 const listEl = document.getElementById("list")
 const countEl = document.getElementById("count")
@@ -79,6 +88,17 @@ function hostOf(url) {
 }
 
 /**
+ * Hard DRM only: shown and named, but never actionable. Sample-AES is excluded
+ * - its key ships in the playlist, so those entries render a record button
+ * (strategy C) instead of a refusal.
+ * @param {Object} entry
+ */
+function isHardProtected(entry) {
+	if (entry.drm?.protected && entry.drm.scheme !== SAMPLE_AES_SCHEME) return true
+	return entry.probeState === "unsupported" && !isCaptureEligible(entry)
+}
+
+/**
  * The service worker may be asleep or mid-restart; a rejected sendMessage is a
  * normal condition, not a crash.
  * @param {Object} message
@@ -127,6 +147,7 @@ function describeProgress(job) {
 	if (job.phase === "preparing") return "Reading manifest\u2026"
 	if (job.phase === "muxing") return "Merging audio and video\u2026"
 	if (job.phase === "saving") return "Saving\u2026"
+	if (job.phase === "recording") return describeRecording(job)
 
 	const parts = [`${job.percent ?? 0}%`]
 	if (job.bytesReceived) parts.push(humanBytes(job.bytesReceived))
@@ -141,6 +162,19 @@ function describeProgress(job) {
 	return parts.join(" \u00b7 ")
 }
 
+/**
+ * Capture sessions may have no percentage (unknown or live duration), but they
+ * always have bytes on disk and a rate; never show a bare "0%".
+ * @param {Object} job */
+function describeRecording(job) {
+	const parts = []
+	if (job.percent) parts.push(`${job.percent}%`)
+	if (job.bytesReceived) parts.push(humanBytes(job.bytesReceived))
+	const speed = humanSpeed(job.speed)
+	if (speed) parts.push(speed)
+	return `Recording\u2026 ${parts.join(" \u00b7 ")}`.trim()
+}
+
 /** @param {Object} job */
 function renderProgress(job) {
 	const fill = el("div", { class: "progress-fill" })
@@ -151,7 +185,11 @@ function renderProgress(job) {
 			el("div", { class: "progress-track" }, [fill]),
 			el("div", { class: "progress-meta", text: describeProgress(job) }),
 		]),
-		job.strategy === Strategy.COMPANION ? chip("ffmpeg", "muted") : null,
+		job.strategy === Strategy.COMPANION
+			? chip("ffmpeg", "muted")
+			: job.strategy === Strategy.CAPTURE
+				? el("span", { class: "chip chip-rec", text: "REC", title: "Recording the stream in the hidden offscreen document" })
+				: null,
 		el("button", {
 			class: "ghost",
 			text: "Cancel",
@@ -217,14 +255,31 @@ function renderVariantRow(entry, variant) {
 
 	const job = activeJobs.get(jobKey(entry.id, index))
 
+	// A Sample-AES rendition cannot be downloaded segment-by-segment, but it
+	// plays fine - so the button stays enabled and switches to the capture
+	// affordance: a warning-themed record button plus a badge saying what
+	// clicking it actually launches.
+	const recordable = isCaptureEligible(entry) && !job
+
 	const side = job
 		? [renderProgress(job)]
 		: [
 				sizeText ? el("span", { class: "size", text: sizeText }) : null,
 				variant.needsMux ? chip("+audio", "muted") : null,
+				recordable
+					? el("span", {
+							class: "chip chip-warn",
+							text: "auto-capture",
+							title:
+								"This tier launches a hidden offscreen recorder: it plays the stream with the browser's own decoder and captures the output. Progress and capture logs report to the background worker.",
+						})
+					: null,
 				el("button", {
-					class: "primary",
-					text: "Download",
+					class: recordable ? "record" : "primary",
+					text: recordable ? "\uD83D\uDD34 Record Stream (Auto-Capture)" : "Download",
+					title: recordable
+						? "Sample-AES stream: recorded via playback in a hidden background document instead of a segment download"
+						: undefined,
 					attrs: { type: "button", "data-entry": entry.id, "data-variant": String(index) },
 				}),
 			]
@@ -241,11 +296,14 @@ function renderVariantRow(entry, variant) {
 
 /** @param {Object} entry */
 function renderEntry(entry) {
+	const captureEligible = isCaptureEligible(entry)
+
 	const head = el("div", { class: "card-head" }, [
 		el("div", { class: "title", text: titleOf(entry), title: entry.url }),
 		el("div", { class: "sub" }, [
 			chip(kindLabel(entry), entry.kind === MediaKind.PROGRESSIVE ? "file" : "stream"),
 			entry.isLive ? chip("LIVE", "live") : null,
+			captureEligible ? chip("Sample-AES", "warn") : null,
 			el("span", { class: "host", text: hostOf(entry.url) }),
 			entry.duration ? el("span", { text: humanDuration(entry.duration) }) : null,
 		]),
@@ -253,9 +311,12 @@ function renderEntry(entry) {
 
 	const body = el("div", { class: "card-body" })
 
-	// Protected streams are shown, named, and left non-actionable. This project
-	// does not circumvent DRM, so offering a button here would be a lie.
-	if (entry.drm?.protected || entry.probeState === "unsupported") {
+	// Hard-DRM streams are shown, named, and left non-actionable. This project
+	// does not circumvent licence-server DRM, so offering a button here would
+	// be a lie. Sample-AES never reaches this branch: its key is published in
+	// the playlist, so it is capture-eligible and rendered below with a record
+	// button instead.
+	if (isHardProtected(entry)) {
 		const scheme = entry.drm?.scheme
 		body.append(
 			el("div", { class: "notice notice-block" }, [
@@ -307,23 +368,36 @@ function renderEntry(entry) {
 			break
 
 		default:
-			if (!entry.variants?.length) {
+			if (!entry.variants?.length && captureEligible) {
+				// Flagged as Sample-AES before the ladder was parsed (or by an
+				// older probe): one record row is still the right affordance.
+				body.append(renderVariantRow(entry, { index: 0 }))
+			} else if (!entry.variants?.length) {
 				body.append(el("div", { class: "notice", text: "No playable renditions found." }))
 				break
+			} else {
+				for (const variant of entry.variants) body.append(renderVariantRow(entry, variant))
+				if (entry.audioTracks?.length) {
+					const n = entry.audioTracks.length
+					body.append(
+						el("div", {
+							class: "hint",
+							text: `${n} separate audio track${n > 1 ? "s" : ""} detected \u00b7 merged into the download`,
+						})
+					)
+				}
 			}
-			for (const variant of entry.variants) body.append(renderVariantRow(entry, variant))
-			if (entry.audioTracks?.length) {
-				const n = entry.audioTracks.length
+			if (captureEligible) {
 				body.append(
 					el("div", {
-						class: "hint",
-						text: `${n} separate audio track${n > 1 ? "s" : ""} detected \u00b7 merged into the download`,
+						class: "hint hint-capture",
+						text: "Sample-AES stream \u00b7 the record button plays it in a hidden background document and captures the output. Keep the tab open and audible until the recording finishes.",
 					})
 				)
 			}
 	}
 
-	return el("article", { class: "card" }, [head, body])
+	return el("article", { class: captureEligible ? "card card-capture" : "card" }, [head, body])
 }
 
 /**

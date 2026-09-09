@@ -11,7 +11,7 @@
  */
 
 import { MSG, Target, FailureCode, broadcast } from "../shared/messages.js"
-import { MediaKind, safeFilename } from "../shared/media-types.js"
+import { MediaKind, safeFilename, isCaptureEligible } from "../shared/media-types.js"
 import * as registry from "./media-registry.js"
 import * as sniffer from "./sniffer.js"
 import * as badge from "./badge.js"
@@ -217,7 +217,11 @@ async function handleMessage(message, sender) {
 			const entry = await registry.get(tabId, entryId)
 			if (!entry) return { ok: false, code: FailureCode.UNKNOWN, message: "Entry no longer available" }
 
-			if (entry.drm?.protected) {
+			// Sample-AES is the one encrypted scheme allowed through: the job is
+			// routed to the capture tier rather than refused (see
+			// download-engine.startJob and the companion host's gate, which
+			// re-checks the manifest and still refuses hard DRM).
+			if (entry.drm?.protected && !isCaptureEligible(entry)) {
 				return {
 					ok: false,
 					code: FailureCode.DRM_PROTECTED,
@@ -243,6 +247,15 @@ async function handleMessage(message, sender) {
 		case MSG.ENGINE_PROGRESS:
 		case MSG.ENGINE_RESULT:
 			return await engine.handleEngineMessage(message)
+
+		// Offscreen recorder -> worker: make the source tab play and watch it.
+		case MSG.CAPTURE_PREPARE_TAB:
+			return await engine.prepareTabForCapture(message.jobId)
+
+		// Injected watcher in the source tab: its player reached the end, so
+		// finalise the recording with everything captured so far.
+		case MSG.CAPTURE_TAB_ENDED:
+			return await engine.requestCaptureStop(message.jobId, { finalize: true })
 
 		case MSG.COMPANION_PROBE: {
 			if (message.force) invalidateCompanionProbe()

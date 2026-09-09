@@ -1,6 +1,6 @@
 {
 	"name": "openvideo-downloader",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Open-source Manifest V3 media sniffer and downloader for progressive, HLS and MPEG-DASH streams.",
 	"private": true,
 	"type": "module",

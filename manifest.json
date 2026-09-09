@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "OpenVideo Downloader",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Detect and download progressive, HLS and MPEG-DASH media. No paywalls, no watermarks, no throttling.",
 	"minimum_chrome_version": "116",
 
@@ -14,6 +14,7 @@
 		"cookies",
 		"offscreen",
 		"scripting",
+		"tabCapture",
 		"nativeMessaging",
 		"declarativeNetRequestWithHostAccess"
 	],

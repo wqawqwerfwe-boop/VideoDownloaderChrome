@@ -40,10 +40,32 @@ export const MSG = Object.freeze({
 	/** SW -> offscreen: liveness check used when reusing an existing document */
 	ENGINE_PING: "engine:ping",
 
+	/** SW -> offscreen recorder: begin a capture session (strategy C) */
+	CAPTURE_RUN: "capture:run",
+	/** offscreen recorder -> SW: make the source tab play and watch for its end */
+	CAPTURE_PREPARE_TAB: "capture:prepare-tab",
+	/** content script -> SW: the tab's own player reached the end of the stream */
+	CAPTURE_TAB_ENDED: "capture:tab-ended",
+
 	/** popup -> SW: is the native companion installed? */
 	COMPANION_PROBE: "companion:probe",
 	/** SW -> popup: companion availability and version */
 	COMPANION_STATUS: "companion:status",
+})
+
+/**
+ * Wire states for the Sample-AES capture handoff. These mirror the companion
+ * host (companion_app/host.py) exactly: when a manifest is Sample-AES
+ * protected - HLS transport encryption with the key published in the playlist,
+ * as opposed to licence-server DRM - the host refuses to download it and
+ * instead reports `requires_capture`, and the job continues in the offscreen
+ * recorder instead of terminating.
+ */
+export const CaptureHandoff = Object.freeze({
+	/** Host packet type/status: the specialised capture handoff state. */
+	STATUS: "requires_capture",
+	/** Host packet code for a Sample-AES manifest. */
+	CODE_SAMPLE_AES: "sample_aes_detected",
 })
 
 /**
@@ -81,6 +103,13 @@ export const FailureCode = Object.freeze({
 	COMPANION_FAILED: "companion_failed",
 	/** A playlist with no ENDLIST tag; only the published window can be captured. */
 	LIVE_STREAM: "live_stream",
+	/**
+	 * Not a failure: the companion host inspected the manifest, found
+	 * Sample-AES, and handed the job to the offscreen recorder (strategy C).
+	 * Carried on an EngineError purely so it can travel the existing
+	 * `runCompanionDownload` rejection path without a second error type.
+	 */
+	REQUIRES_CAPTURE: "requires_capture",
 })
 
 /**
@@ -94,13 +123,19 @@ export class EngineError extends Error {
 	/**
 	 * @param {string} code one of FailureCode
 	 * @param {string} message
-	 * @param {{ cause?: unknown, retryable?: boolean }} [options]
+	 * @param {{ cause?: unknown, retryable?: boolean, scheme?: string }} [options]
 	 */
 	constructor(code, message, options = {}) {
 		super(message)
 		this.name = "EngineError"
 		this.code = code
 		this.cause = options.cause
+		/**
+		 * DRM scheme named by a DRM_PROTECTED refusal, so the cascade can tell
+		 * "widevine" (terminal) from "sample-aes" (capture-eligible) without
+		 * pattern-matching the human-readable message.
+		 */
+		this.scheme = options.scheme ?? null
 		/** Whether escalating to Strategy B could plausibly help. */
 		this.retryable = options.retryable ?? RETRYABLE_CODES.has(code)
 	}

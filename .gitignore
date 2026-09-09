@@ -5,3 +5,7 @@ dist/
 .env
 .vscode/
 .idea/
+
+# Python bytecode from the companion host
+__pycache__/
+*.pyc

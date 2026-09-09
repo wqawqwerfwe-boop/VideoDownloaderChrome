@@ -225,7 +225,10 @@ async function planHls(text, entry, variantIndex, signal) {
 	}
 
 	if (parsed.drm?.protected) {
-		throw new EngineError(FailureCode.DRM_PROTECTED, `Stream is ${parsed.drm.scheme}-protected`, { retryable: false })
+		throw new EngineError(FailureCode.DRM_PROTECTED, `Stream is ${parsed.drm.scheme}-protected`, {
+			retryable: false,
+			scheme: parsed.drm.scheme,
+		})
 	}
 
 	// A media playlist is already the plan.
@@ -247,7 +250,10 @@ async function planHls(text, entry, variantIndex, signal) {
 
 	const media = parseMediaPlaylist(await fetchManifestText(variant.url, signal), variant.url)
 	if (media.drm?.protected) {
-		throw new EngineError(FailureCode.DRM_PROTECTED, `Stream is ${media.drm.scheme}-protected`, { retryable: false })
+		throw new EngineError(FailureCode.DRM_PROTECTED, `Stream is ${media.drm.scheme}-protected`, {
+			retryable: false,
+			scheme: media.drm.scheme,
+		})
 	}
 
 	let audio = null
@@ -291,7 +297,10 @@ async function planDash(text, entry, variantIndex) {
 	}
 
 	if (parsed.drm?.protected) {
-		throw new EngineError(FailureCode.DRM_PROTECTED, `Stream is ${parsed.drm.scheme}-protected`, { retryable: false })
+		throw new EngineError(FailureCode.DRM_PROTECTED, `Stream is ${parsed.drm.scheme}-protected`, {
+			retryable: false,
+			scheme: parsed.drm.scheme,
+		})
 	}
 
 	const variant = parsed.variants[variantIndex ?? 0] ?? parsed.audioTracks[0]
@@ -438,6 +447,7 @@ async function runJob(request) {
 		if (entry.drm?.protected) {
 			throw new EngineError(FailureCode.DRM_PROTECTED, `Stream is ${entry.drm.scheme}-protected`, {
 				retryable: false,
+				scheme: entry.drm.scheme,
 			})
 		}
 
@@ -522,6 +532,9 @@ async function runJob(request) {
 			code: mapped.code,
 			message: mapped.message,
 			retryable: mapped.retryable,
+			// A DRM refusal names its scheme so the cascade can tell a terminal
+			// Widevine/CENC refusal from Sample-AES, which routes to the recorder.
+			scheme: mapped.scheme ?? null,
 			warnings: [...warnings],
 		})
 	}
